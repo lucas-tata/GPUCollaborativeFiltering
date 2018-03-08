@@ -11,19 +11,22 @@ CPU Implementation
 #include <string.h>
 #include <assert.h>
 
-#define INPUT_SIZE 64
+#define INPUT_SIZE 16384
+#define SPARSE_SIZE 8192
+#define USER_SIZE 2048
+#define ARTIST_SIZE 8192
 #define LINE_SIZE 1024
 
-int dataMatrix[INPUT_SIZE][INPUT_SIZE]; //our output sparse matrix (users by artists, data is the play count) 
-char artists[INPUT_SIZE][50]; //running list of the different artists
-char users[INPUT_SIZE][50]; //running list of the different users
+int *dataMatrix; //our output sparse matrix (users by artists, data is the play count) 
+char **artists;
+char **users;
 int endOfArtistIndex = 0; //keep tabs on how many artists are currently in there
 int endOfUserIndex = 0; //keep tabs on how many users are currently in there
 
 int checkIfArtistExistsInData(char * artist)
 {
     int i;
-    for(i = 0; i < INPUT_SIZE; i++)
+    for(i = 0; i < ARTIST_SIZE; i++)
     {
         if(strcmp(artist, artists[i]) == 0)
         {
@@ -36,7 +39,7 @@ int checkIfArtistExistsInData(char * artist)
 int checkIfUserExistsInData(char * user)
 {
     int i;
-    for(i = 0; i < INPUT_SIZE; i++)
+    for(i = 0; i < USER_SIZE; i++)
     {
         if(strcmp(user, users[i]) == 0)
         {
@@ -46,10 +49,27 @@ int checkIfUserExistsInData(char * user)
     return -1;
 }
 
+int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
+{
+    int userSize = INPUT_SIZE, dataSize = INPUT_SIZE;
+
+    
+}
+
 int main (int args, char **argv)
 {
-
-	FILE* data = fopen("usersha1-artmbid-artname-plays.tsv", "r"); //our dataset file (tab separated file)
+    dataMatrix = (int *)malloc(sizeof(int) * SPARSE_SIZE * SPARSE_SIZE);
+	users = malloc(sizeof(char*) * USER_SIZE);
+    for(int i = 0; i < USER_SIZE; i++)
+    {
+        users[i] = malloc(50 * sizeof(char));
+    }
+    artists = malloc(sizeof(char*) * ARTIST_SIZE);
+    for(int i = 0; i < ARTIST_SIZE; i++)
+    {
+        artists[i] = malloc(50 * sizeof(char));
+    }
+    FILE* data = fopen("usersha1-artmbid-artname-plays.tsv", "r"); //our dataset file (tab separated file)
 	if(data == NULL)
 	{
 		printf("File read error");
@@ -62,12 +82,16 @@ int main (int args, char **argv)
     while (1)
     {
         char dataLine[LINE_SIZE]; 
-        if(i < INPUT_SIZE && fgets(dataLine, sizeof(dataLine), data) != NULL) //reading in 1024 lines using fgets and putting it in dataLine
+        if(i < INPUT_SIZE && fgets(dataLine, sizeof(dataLine), data) != NULL)//reading in entire line using fgets and putting it in dataLine
 		{
 			char * token = strtok(dataLine, "\t"); //parsing the data with the tab separater
 			
 			j = 0;
 			while(j < 4) {
+                if(token == NULL)
+                {
+                    break;
+                }
                 if(j == 0)//user id, check if its in the user list: if not, add to list, if it is, save the index
                 {
                     currentUserIndex = checkIfUserExistsInData(token);
@@ -93,7 +117,7 @@ int main (int args, char **argv)
                 else if(j == 3) //plays, use the indexes to see where they should go in the data (sparse matrix)
                 {
                     currentPlayCount = atoi(token); //convert to integer and place in sparse matrix
-                    dataMatrix[currentUserIndex][currentArtistIndex] = currentPlayCount;
+                    dataMatrix[currentUserIndex * SPARSE_SIZE + currentArtistIndex] = currentPlayCount;
                 }
 				token = strtok(NULL, "\t"); //reading the next value of the parsed data
 				j++;
@@ -105,15 +129,15 @@ int main (int args, char **argv)
 			break;
 		}
     }
-	for(i = 0; i < INPUT_SIZE; i++)
+	for(i = 0; i < SPARSE_SIZE; i++)
 	{
-        for(j = 0; j < INPUT_SIZE; j++)
+        for(j = 0; j < SPARSE_SIZE; j++)
         {
-            printf("%d ", dataMatrix[i][j]);
+            printf("%d ", dataMatrix[i*SPARSE_SIZE + j]);
         }
         printf("\n");
 	}
-	
+	//implicit_als(40, 10, 0.1, 10);
 	return 0;
 }
 
