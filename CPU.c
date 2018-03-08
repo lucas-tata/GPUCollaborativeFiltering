@@ -17,6 +17,7 @@ CPU Implementation
 #define ARTIST_SIZE 8192
 #define LINE_SIZE 1024
 
+
 int *dataMatrix; //our output sparse matrix (users by artists, data is the play count) 
 char **artists;
 char **users;
@@ -51,8 +52,41 @@ int checkIfUserExistsInData(char * user)
 
 int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
 {
-    int userSize = INPUT_SIZE, dataSize = INPUT_SIZE;
+    /*confidence = sparse_data * alpha_val
+    
+    # Get the size of user rows and item columns
+    user_size, item_size = sparse_data.shape
+    
+    # We create the user vectors X of size users-by-features, the item vectors
+    # Y of size items-by-features and randomly assign the values.
+    X = sparse.csr_matrix(np.random.normal(size = (user_size, features)))
+    Y = sparse.csr_matrix(np.random.normal(size = (item_size, features)))
+    
+    #Precompute I and lambda * I
+    X_I = sparse.eye(user_size)
+    Y_I = sparse.eye(item_size)
+    
+    I = sparse.eye(features)
+    lI = lambda_val * I*/
 
+
+
+    ///////////////////////////////////
+
+    //calculate confidence
+    //need to make another matrix?
+
+    //////////////////////////////////
+
+    //use endOfArtistIndex and endOfUserIndex to create X and Y
+
+    /////////////////////////////////////
+
+    //need to compute lambda and lambda * INPUT_SIZE
+
+    ////////////////////////////////////
+
+    
     
 }
 
@@ -69,6 +103,7 @@ int main (int args, char **argv)
     {
         artists[i] = malloc(50 * sizeof(char));
     }
+    printf("malloced!");
     FILE* data = fopen("usersha1-artmbid-artname-plays.tsv", "r"); //our dataset file (tab separated file)
 	if(data == NULL)
 	{
@@ -77,7 +112,8 @@ int main (int args, char **argv)
 	}
 
 	//j: 0 (user id), 1 (artist id), 2 (artist name), 3(plays)
-	int i = 0, j = 0;
+	long i = 0;
+    int j = 0;
     int currentUserIndex = 0, currentArtistIndex = 0, currentPlayCount = 0;
     while (1)
     {
@@ -129,15 +165,19 @@ int main (int args, char **argv)
 			break;
 		}
     }
-	for(i = 0; i < SPARSE_SIZE; i++)
+	
+    printf("artists size is %d ", endOfArtistIndex);
+    printf("users size is %d ", endOfUserIndex);
+
+    for(i = 0; i < endOfUserIndex; i++)
 	{
-        for(j = 0; j < SPARSE_SIZE; j++)
+        for(j = 0; j < endOfArtistIndex; j++)
         {
             printf("%d ", dataMatrix[i*SPARSE_SIZE + j]);
         }
         printf("\n");
 	}
-	//implicit_als(40, 10, 0.1, 10);
+	implicit_als(40, 10, 0.1, 10);
 	return 0;
 }
 
