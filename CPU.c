@@ -20,7 +20,7 @@ CPU Implementation
 #define RAND_RANGE 100
 #define NUM_RECOMMENDATIONS 10
 #define NUM_FEATURES 10
-#define ITERATIONS 1
+#define ITERATIONS 2
 
 
 int *dataMatrix, *X, *Y, *X_T, *Y_T; //our output sparse matrix (users by artists, data is the play count) 
@@ -190,8 +190,11 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
     user_confidence_I = (int *)malloc(sizeof(int) * features * features);
     artist_confidence_I = (int *)malloc(sizeof(int) * features * features);
 
-    int *X_temp, *Y_temp, *Y_result_y, *Y_result_pu, *Y_temp_2;
+    int *X_temp, *Y_temp, *Y_result_y, *Y_result_pu, *Y_temp_2, *X_result_x, *X_result_pi, *X_temp_2;
     X_temp = (int *)malloc(sizeof(int) * endOfUserIndex * features);
+    X_temp_2 = (int *)malloc(sizeof(int) * endOfUserIndex * features);
+    X_result_x = (int *)malloc(sizeof(int) * endOfUserIndex * endOfUserIndex);
+    X_result_pi = (int *)malloc(sizeof(int) * endOfUserIndex * endOfUserIndex);
     Y_temp = (int *)malloc(sizeof(int) * endOfArtistIndex * features);
     Y_temp_2 = (int *)malloc(sizeof(int) * endOfArtistIndex * features);
     Y_result_y = (int *)malloc(sizeof(int) * endOfArtistIndex * endOfArtistIndex);
@@ -222,7 +225,7 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
 
     for(int i = 0; i < iterations; i++)
     {
-        //printf("iteration %d of %d", i, iterations);
+        printf("iteration %d of %d", i, iterations);
         for(int j = 0; j < endOfUserIndex; j++)
         {
             for(int k = 0; k < features; k++)
@@ -247,16 +250,20 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
             
             mat_mat_multiply(Y_T, user_confidence_I, Y_temp, endOfArtistIndex, features, features);
             mat_mat_multiply(Y_temp, Y, Y_result_y, endOfArtistIndex, features, endOfArtistIndex);
-            for(int i = 0; i < endOfArtistIndex; i++)
+            for(int j = 0; j < endOfArtistIndex; j++)
             {
-                for(int j = 0; j < endOfArtistIndex; j++)
+                for(int k = 0; k < endOfArtistIndex; k++)
                 {
-                    Y_result_y[i*endOfArtistIndex + j] += Y_P[i*endOfArtistIndex + j] + I1[i*endOfArtistIndex + j];
+                    Y_result_y[j*endOfArtistIndex + k] += Y_P[j*endOfArtistIndex + k] + I1[j*endOfArtistIndex + k];
                 }
             }
 
             mat_mat_multiply(Y_T, user_confidence, Y_temp_2, endOfArtistIndex, features, features);
             mat_mat_multiply(Y_temp_2, Y, Y_result_pu, endOfArtistIndex, features, endOfArtistIndex);
+            for(int k = 0; k < features; k++)
+            {
+                X[i*features + k] = Y_result_y[i*features + k] / Y_result_pu[i*features + k];
+            }
         }
         for(int j = 0; j < endOfArtistIndex; j++)
         {
@@ -276,6 +283,22 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
             {
                 artist_confidence_I[k * features + k] = artist_row[k];
                 artist_confidence[k * features + k] = artist_row[k] + 1;
+            }
+            mat_mat_multiply(X_T, artist_confidence_I, X_temp, endOfUserIndex, features, features);
+            mat_mat_multiply(X_temp, X, X_result_x, endOfUserIndex, features, endOfUserIndex);
+            for(int j = 0; j < endOfUserIndex; j++)
+            {
+                for(int k = 0; k < endOfUserIndex; k++)
+                {
+                    Y_result_y[j*endOfUserIndex + k] += Y_P[j*endOfUserIndex + k] + I1[j*endOfUserIndex + k];
+                }
+            }
+
+            mat_mat_multiply(X_T, artist_confidence, X_temp_2, endOfUserIndex, features, features);
+            mat_mat_multiply(X_temp_2, X, X_result_pi, endOfUserIndex, features, endOfUserIndex);
+            for(int k = 0; k < features; k++)
+            {
+                Y[i*features + k] = X_result_x[i*features + k] / X_result_pi[i*features + k];
             }
         }
         
