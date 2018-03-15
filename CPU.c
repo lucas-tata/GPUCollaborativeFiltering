@@ -395,7 +395,7 @@ int main (int args, char **argv)
                 else if(j == 2)//artist name, doesnt really matter right now
                 {
                     if(newname == 1)
-                    strcpy(artists[endOfArtistIndex++], token);
+                    strcpy(artistNames[endOfArtistIndex++], token);
                 }
                 else if(j == 3) //plays, use the indexes to see where they should go in the data (sparse matrix)
                 {
