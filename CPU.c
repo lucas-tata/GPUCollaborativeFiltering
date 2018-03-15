@@ -124,7 +124,7 @@ void recommend(int user_id, int num_items, int * answer)
             {
                 for(int k = 0; k < i; k++)
                 {
-                    if(index == answer[k])
+                    if(j == answer[k])
                     {
                         no = 1;
                     }
@@ -413,7 +413,7 @@ int main (int args, char **argv)
     recommend(1, NUM_RECOMMENDATIONS, ans);
     for(int i = 0; i < NUM_RECOMMENDATIONS; i++)
     {
-        printf("%d ", ans[i]);
+        printf("%s ", artists[ans[i]]);
     }
 	return 0;
 }
