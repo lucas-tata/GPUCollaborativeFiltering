@@ -10,12 +10,14 @@ CPU Implementation
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <math.h>
 
 #define INPUT_SIZE 16384
 #define SPARSE_SIZE 8192
 #define USER_SIZE 2048
 #define ARTIST_SIZE 8192
 #define LINE_SIZE 1024
+#define RAND_RANGE 100
 
 
 int *dataMatrix; //our output sparse matrix (users by artists, data is the play count) 
@@ -48,6 +50,24 @@ int checkIfUserExistsInData(char * user)
         }
     }
     return -1;
+}
+
+void mat_mat_multiply(int *mat1, int *mat2, int *res, int num_rows, int num_cols)
+{
+    for(int k = 0; k < num_rows; k ++)
+    {
+        for(int i = 0; i < num_rows; i ++)
+        {
+            int temp_res = 0;
+            for (int j = 0; j < num_cols; j ++)
+            {
+
+                temp_res += mat1[i * num_cols + j] * mat2[k + num_rows * j];
+            }
+
+            res[k+i*num_rows] = temp_res;
+        }
+    }
 }
 
 int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
@@ -94,9 +114,136 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
         }
     }
 
+    int *X, *Y, *Y_T, *X_T, *X_P, *Y_P; 
+
+    X = (int *)malloc(sizeof(int) * endOfUserIndex * features);
+    Y = (int *)malloc(sizeof(int) * endOfArtistIndex * features);
+    X_T = (int *)malloc(sizeof(int) * endOfUserIndex * features);
+    Y_T = (int *)malloc(sizeof(int) * endOfArtistIndex * features);
+    X_P = (int *)malloc(sizeof(int) * endOfUserIndex * endOfUserIndex);
+    Y_P = (int *)malloc(sizeof(int) * endOfArtistIndex * endOfArtistIndex);
     
-    
-    
+    for(int i = 0; i < endOfUserIndex; i++)
+    {
+        for(int j = 0; j < features; j++)
+        {
+            X[i * features + j] = rand() % RAND_RANGE;
+        }
+    }
+
+    for(int i = 0; i < endOfUserIndex; i++)
+    {
+        for(int j = 0; j < features; j++)
+        {
+            X_T[j * endOfUserIndex + i] = X[i*features + j];
+        }
+    }
+
+
+
+
+    for(int i = 0; i < endOfArtistIndex; i++)
+    {
+        for(int j = 0; j < features; j++)
+        {
+            Y[i * features + j] = rand() % RAND_RANGE;
+        }
+    }
+    for(int i = 0; i < endOfArtistIndex; i++)
+    {
+        for(int j = 0; j < features; j++)
+        {
+            Y_T[j * endOfArtistIndex + i] = Y[i * features + j];
+        }
+    }
+
+    int *X_I, *Y_I, *I, *I1, *user_row, *artist_row, *user_pref, *artist_pref, *user_confidence, *artist_confidence, *user_confidence_I, *artist_confidence_I; 
+
+    X_I = (int *)malloc(sizeof(int) * endOfUserIndex * endOfUserIndex);
+    Y_I = (int *)malloc(sizeof(int) * endOfArtistIndex * endOfArtistIndex);
+    I = (int *)malloc(sizeof(int) * features * features);
+    I1 = (int *)malloc(sizeof(int) * features * features);
+    user_row = (int *)malloc(sizeof(int) * features);
+    artist_row = (int *)malloc(sizeof(int) * features);
+    user_pref = (int *)malloc(sizeof(int) * features);
+    artist_pref = (int *)malloc(sizeof(int) * features);
+    user_confidence = (int *)malloc(sizeof(int) * features * features);
+    artist_confidence = (int *)malloc(sizeof(int) * features * features);
+    user_confidence_I = (int *)malloc(sizeof(int) * features * features);
+    artist_confidence_I = (int *)malloc(sizeof(int) * features * features);
+
+    for(int i = 0; i < endOfUserIndex; i++)
+    {
+        X_I[i * endOfUserIndex + i] = 1;
+    }
+
+    for(int i = 0; i < endOfArtistIndex; i++)
+    {
+        Y_I[i * endOfArtistIndex + i] = 1;
+    }
+
+    for(int i = 0; i < features; i++)
+    {
+        I[i * features + i] = 1;
+    }
+    for(int i = 0; i < features; i++)
+    {
+        I1[i * features + i] = lambda_val;
+    }
+
+    mat_mat_multiply(X, X_T, X_P, endOfUserIndex, features);
+    mat_mat_multiply(Y, Y_T, Y_P, endOfArtistIndex, features);
+
+
+    for(int i = 0; i < iterations; i++)
+    {
+        //printf("iteration %d of %d", i, iterations);
+        for(int j = 0; j < endOfUserIndex; j++)
+        {
+            for(int k = 0; k < features; k++)
+            {
+                user_row[k] = X[j*features + k];
+                if(user_row[k] != 0)
+                {
+                    user_pref[k] = 1;
+                }
+                else
+                {
+                    user_pref[k] = user_row[k];
+                }
+            }
+
+            for(int k = 0; k < features; k++)
+            {
+                user_confidence_I[k * features + k] = user_row[k];
+                user_confidence[k * features + k] = user_row[k] + 1;
+            }
+
+        }
+        for(int j = 0; j < endOfArtistIndex; j++)
+        {
+            for(int k = 0; k < features; k++)
+            {
+                artist_row[k] = Y[j*features + k];
+                if(artist_row[k] != 0)
+                {
+                    artist_pref[k] = 1;
+                }
+                else
+                {
+                    artist_pref[k] = artist_row[k];
+                }
+            }
+            for(int k = 0; k < features; k++)
+            {
+                artist_confidence_I[k * features + k] = artist_row[k];
+                artist_confidence[k * features + k] = artist_row[k] + 1;
+            }
+        }
+        
+    }
+
+
 }
 
 int main (int args, char **argv)
@@ -112,7 +259,7 @@ int main (int args, char **argv)
     {
         artists[i] = malloc(50 * sizeof(char));
     }
-    printf("malloced!");
+    //printf("malloced!");
     FILE* data = fopen("usersha1-artmbid-artname-plays.tsv", "r"); //our dataset file (tab separated file)
 	if(data == NULL)
 	{
@@ -175,8 +322,8 @@ int main (int args, char **argv)
 		}
     }
 	
-    printf("artists size is %d ", endOfArtistIndex);
-    printf("users size is %d ", endOfUserIndex);
+    //printf("artists size is %d ", endOfArtistIndex);
+    //printf("users size is %d ", endOfUserIndex);
 
     /*for(i = 0; i < endOfUserIndex; i++)
 	{
