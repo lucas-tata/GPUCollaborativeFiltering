@@ -18,9 +18,9 @@ CPU Implementation
 #define ARTIST_SIZE 8192
 #define LINE_SIZE 1024
 #define RAND_RANGE 100
-#define NUM_RECOMMENDATIONS 10
+#define NUM_RECOMMENDATIONS 5
 #define NUM_FEATURES 10
-#define ITERATIONS 2
+#define ITERATIONS 1
 
 
 int *dataMatrix, *X, *Y, *X_T, *Y_T; //our output sparse matrix (users by artists, data is the play count) 
@@ -87,13 +87,14 @@ void mat_vec_multiply(int *mat, int *vec, int *res, int num_rows, int num_cols)
 	}
 }
 
-int recommend(int user_id, int num_items)
+void recommend(int user_id, int num_items, int * answer)
 {
+    answer = (int *)malloc(sizeof(int) * num_items);
     int *user_recs, *rec_vector, *X_rec;
-    double *reccomend_vector;
     user_recs = (int *)malloc(sizeof(int) * endOfArtistIndex);
     rec_vector = (int *)malloc(sizeof(int) * endOfArtistIndex);
     X_rec = (int *)malloc(sizeof(int) * NUM_FEATURES);
+    int maxVal = 0, index = 0, no = 0;
     for(int i = 0; i < endOfArtistIndex; i++)
     {
         user_recs[i] = dataMatrix[user_id*endOfArtistIndex + i];
@@ -113,9 +114,31 @@ int recommend(int user_id, int num_items)
     }
 
     mat_vec_multiply(Y_T, X_rec, rec_vector, NUM_FEATURES, endOfArtistIndex);
-    
 
-    return 0;
+    for(int i = 0; i < num_items; i++)
+    {
+        maxVal = 0, index = 0;
+        for(int j = 0; j < endOfArtistIndex; j++)
+        {
+            no = 0;
+            if(rec_vector[j] > maxVal)
+            {
+                for(int k = 0; k < i; k++)
+                {
+                    if(index == answer[k])
+                    {
+                        no = 1;
+                    }
+                }
+                if(no == 0)
+                {
+                    maxVal = rec_vector[j];
+                    index = j;
+                }
+            }
+        }
+        answer[i] = index;
+    }
 }
 
 int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
@@ -395,8 +418,13 @@ int main (int args, char **argv)
         }
         printf("\n");
 	}*/
-    
+    int *ans;
 	implicit_als(40, ITERATIONS, 0.1, 10);
+    recommend(1, NUM_RECOMMENDATIONS, ans);
+    for(int i = 0; i < NUM_RECOMMENDATIONS; i++)
+    {
+        printf("%d ", ans[i]);
+    }
 	return 0;
 }
 
