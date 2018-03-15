@@ -89,7 +89,6 @@ void mat_vec_multiply(int *mat, int *vec, int *res, int num_rows, int num_cols)
 
 void recommend(int user_id, int num_items, int * answer)
 {
-    answer = (int *)malloc(sizeof(int) * num_items);
     int *user_recs, *rec_vector, *X_rec;
     user_recs = (int *)malloc(sizeof(int) * endOfArtistIndex);
     rec_vector = (int *)malloc(sizeof(int) * endOfArtistIndex);
@@ -143,7 +142,6 @@ void recommend(int user_id, int num_items, int * answer)
 
 int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
 {
-    printf("here");
     for(int i = 0; i < endOfArtistIndex; i++)
     {
         for(int j = 0; j < endOfUserIndex; j++)
@@ -248,7 +246,6 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
 
     for(int i = 0; i < iterations; i++)
     {
-        printf("iteration %d of %d", i, iterations);
         for(int j = 0; j < endOfUserIndex; j++)
         {
             for(int k = 0; k < features; k++)
@@ -407,18 +404,11 @@ int main (int args, char **argv)
 		}
     }
 	
-    //printf("artists size is %d ", endOfArtistIndex);
-    //printf("users size is %d ", endOfUserIndex);
+    printf("artists size is %d ", endOfArtistIndex);
+    printf("users size is %d ", endOfUserIndex);
 
-    /*for(i = 0; i < endOfUserIndex; i++)
-	{
-        for(j = 0; j < endOfArtistIndex; j++)
-        {
-            printf("%d ", dataMatrix[i*SPARSE_SIZE + j]);
-        }
-        printf("\n");
-	}*/
     int *ans;
+    ans = (int *)malloc(sizeof(int) * NUM_RECOMMENDATIONS);
 	implicit_als(40, ITERATIONS, 0.1, 10);
     recommend(1, NUM_RECOMMENDATIONS, ans);
     for(int i = 0; i < NUM_RECOMMENDATIONS; i++)
