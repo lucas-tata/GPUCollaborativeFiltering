@@ -18,9 +18,12 @@ CPU Implementation
 #define ARTIST_SIZE 8192
 #define LINE_SIZE 1024
 #define RAND_RANGE 100
+#define NUM_RECOMMENDATIONS 10
+#define NUM_FEATURES 10
+#define ITERATIONS 1
 
 
-int *dataMatrix; //our output sparse matrix (users by artists, data is the play count) 
+int *dataMatrix, *X, *Y, *X_T, *Y_T; //our output sparse matrix (users by artists, data is the play count) 
 char **artists;
 char **users;
 int endOfArtistIndex = 0; //keep tabs on how many artists are currently in there
@@ -52,60 +55,72 @@ int checkIfUserExistsInData(char * user)
     return -1;
 }
 
-void mat_mat_multiply(int *mat1, int *mat2, int *res, int num_rows, int num_cols)
+void mat_mat_multiply(int *mat1, int *mat2, int *res, int num_rows1, int num_cols, int num_rows2)
 {
-    for(int k = 0; k < num_rows; k ++)
+    for(int k = 0; k < num_rows1; k ++)
     {
-        for(int i = 0; i < num_rows; i ++)
+        for(int i = 0; i < num_rows2; i ++)
         {
             int temp_res = 0;
             for (int j = 0; j < num_cols; j ++)
             {
 
-                temp_res += mat1[i * num_cols + j] * mat2[k + num_rows * j];
+                temp_res += mat1[i * num_cols + j] * mat2[k + num_rows2 * j];
             }
 
-            res[k+i*num_rows] = temp_res;
+            res[k+i*num_rows1] = temp_res;
         }
     }
 }
 
+void mat_vec_multiply(int *mat, int *vec, int *res, int num_rows, int num_cols)
+{
+	for(int i = 0; i < num_rows; i ++)
+	{
+		int temp_res = 0;
+		for (int j = 0; j < num_cols; j ++)
+		{
+			temp_res += mat[i * num_cols + j] * vec[j];
+		}
+
+		res[i] = temp_res;
+	}
+}
+
+int recommend(int user_id, int num_items)
+{
+    int *user_recs, *rec_vector, *X_rec;
+    double *reccomend_vector;
+    user_recs = (int *)malloc(sizeof(int) * endOfArtistIndex);
+    rec_vector = (int *)malloc(sizeof(int) * endOfArtistIndex);
+    X_rec = (int *)malloc(sizeof(int) * NUM_FEATURES);
+    for(int i = 0; i < endOfArtistIndex; i++)
+    {
+        user_recs[i] = dataMatrix[user_id*endOfArtistIndex + i];
+        if(user_recs[i] == 0)
+        {
+            user_recs[i] = 1;
+        }
+        else
+        {
+            user_recs[i] = 0;
+        }
+    }
+
+    for(int i = 0; i < NUM_FEATURES; i++)
+    {
+        X_rec[i] = X[user_id * endOfArtistIndex + i];
+    }
+
+    mat_vec_multiply(Y_T, X_rec, rec_vector, NUM_FEATURES, endOfArtistIndex);
+    
+
+    return 0;
+}
+
 int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
 {
-    /*confidence = sparse_data * alpha_val
-    
-    # Get the size of user rows and item columns
-    user_size, item_size = sparse_data.shape
-    
-    # We create the user vectors X of size users-by-features, the item vectors
-    # Y of size items-by-features and randomly assign the values.
-    X = sparse.csr_matrix(np.random.normal(size = (user_size, features)))
-    Y = sparse.csr_matrix(np.random.normal(size = (item_size, features)))
-    
-    #Precompute I and lambda * I
-    X_I = sparse.eye(user_size)
-    Y_I = sparse.eye(item_size)
-    
-    I = sparse.eye(features)
-    lI = lambda_val * I*/
-
-
-
-    ///////////////////////////////////
-
-    //calculate confidence
-    //need to make another matrix?
-
-    //////////////////////////////////
-
-    //use endOfArtistIndex and endOfUserIndex to create X and Y
-
-    /////////////////////////////////////
-
-    //need to compute lambda and lambda * INPUT_SIZE
-
-    ////////////////////////////////////
-
+    printf("here");
     for(int i = 0; i < endOfArtistIndex; i++)
     {
         for(int j = 0; j < endOfUserIndex; j++)
@@ -113,13 +128,15 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
             dataMatrix[i * SPARSE_SIZE + j] = dataMatrix[i * SPARSE_SIZE + j] * alpha_val;
         }
     }
+    
+    int *X_P, *Y_P; 
 
-    int *X, *Y, *Y_T, *X_T, *X_P, *Y_P; 
-
-    X = (int *)malloc(sizeof(int) * endOfUserIndex * features);
-    Y = (int *)malloc(sizeof(int) * endOfArtistIndex * features);
-    X_T = (int *)malloc(sizeof(int) * endOfUserIndex * features);
-    Y_T = (int *)malloc(sizeof(int) * endOfArtistIndex * features);
+    X = (int *)malloc(sizeof(int) * endOfUserIndex * NUM_FEATURES);
+    Y = (int *)malloc(sizeof(int) * endOfArtistIndex * NUM_FEATURES);
+    X_T = (int *)malloc(sizeof(int) * endOfUserIndex * NUM_FEATURES);
+    Y_T = (int *)malloc(sizeof(int) * endOfArtistIndex * NUM_FEATURES);
+    
+    
     X_P = (int *)malloc(sizeof(int) * endOfUserIndex * endOfUserIndex);
     Y_P = (int *)malloc(sizeof(int) * endOfArtistIndex * endOfArtistIndex);
     
@@ -157,12 +174,13 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
         }
     }
 
+
     int *X_I, *Y_I, *I, *I1, *user_row, *artist_row, *user_pref, *artist_pref, *user_confidence, *artist_confidence, *user_confidence_I, *artist_confidence_I; 
 
     X_I = (int *)malloc(sizeof(int) * endOfUserIndex * endOfUserIndex);
     Y_I = (int *)malloc(sizeof(int) * endOfArtistIndex * endOfArtistIndex);
     I = (int *)malloc(sizeof(int) * features * features);
-    I1 = (int *)malloc(sizeof(int) * features * features);
+    I1 = (int *)malloc(sizeof(int) * endOfArtistIndex * endOfArtistIndex);
     user_row = (int *)malloc(sizeof(int) * features);
     artist_row = (int *)malloc(sizeof(int) * features);
     user_pref = (int *)malloc(sizeof(int) * features);
@@ -171,6 +189,13 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
     artist_confidence = (int *)malloc(sizeof(int) * features * features);
     user_confidence_I = (int *)malloc(sizeof(int) * features * features);
     artist_confidence_I = (int *)malloc(sizeof(int) * features * features);
+
+    int *X_temp, *Y_temp, *Y_result_y, *Y_result_pu, *Y_temp_2;
+    X_temp = (int *)malloc(sizeof(int) * endOfUserIndex * features);
+    Y_temp = (int *)malloc(sizeof(int) * endOfArtistIndex * features);
+    Y_temp_2 = (int *)malloc(sizeof(int) * endOfArtistIndex * features);
+    Y_result_y = (int *)malloc(sizeof(int) * endOfArtistIndex * endOfArtistIndex);
+    Y_result_pu = (int *)malloc(sizeof(int) * endOfArtistIndex * endOfArtistIndex);
 
     for(int i = 0; i < endOfUserIndex; i++)
     {
@@ -186,13 +211,13 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
     {
         I[i * features + i] = 1;
     }
-    for(int i = 0; i < features; i++)
+    for(int i = 0; i < endOfArtistIndex; i++)
     {
-        I1[i * features + i] = lambda_val;
+        I1[i * endOfArtistIndex + i] = lambda_val;
     }
 
-    mat_mat_multiply(X, X_T, X_P, endOfUserIndex, features);
-    mat_mat_multiply(Y, Y_T, Y_P, endOfArtistIndex, features);
+    mat_mat_multiply(X, X_T, X_P, endOfUserIndex, features, endOfUserIndex);
+    mat_mat_multiply(Y, Y_T, Y_P, endOfArtistIndex, features, endOfArtistIndex);
 
 
     for(int i = 0; i < iterations; i++)
@@ -219,6 +244,19 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
                 user_confidence[k * features + k] = user_row[k] + 1;
             }
 
+            
+            mat_mat_multiply(Y_T, user_confidence_I, Y_temp, endOfArtistIndex, features, features);
+            mat_mat_multiply(Y_temp, Y, Y_result_y, endOfArtistIndex, features, endOfArtistIndex);
+            for(int i = 0; i < endOfArtistIndex; i++)
+            {
+                for(int j = 0; j < endOfArtistIndex; j++)
+                {
+                    Y_result_y[i*endOfArtistIndex + j] += Y_P[i*endOfArtistIndex + j] + I1[i*endOfArtistIndex + j];
+                }
+            }
+
+            mat_mat_multiply(Y_T, user_confidence, Y_temp_2, endOfArtistIndex, features, features);
+            mat_mat_multiply(Y_temp_2, Y, Y_result_pu, endOfArtistIndex, features, endOfArtistIndex);
         }
         for(int j = 0; j < endOfArtistIndex; j++)
         {
@@ -248,7 +286,9 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
 
 int main (int args, char **argv)
 {
+    
     dataMatrix = (int *)malloc(sizeof(int) * SPARSE_SIZE * SPARSE_SIZE);
+    
 	users = malloc(sizeof(char*) * USER_SIZE);
     for(int i = 0; i < USER_SIZE; i++)
     {
@@ -259,7 +299,6 @@ int main (int args, char **argv)
     {
         artists[i] = malloc(50 * sizeof(char));
     }
-    //printf("malloced!");
     FILE* data = fopen("usersha1-artmbid-artname-plays.tsv", "r"); //our dataset file (tab separated file)
 	if(data == NULL)
 	{
@@ -333,7 +372,8 @@ int main (int args, char **argv)
         }
         printf("\n");
 	}*/
-	implicit_als(40, 10, 0.1, 10);
+    
+	implicit_als(40, ITERATIONS, 0.1, 10);
 	return 0;
 }
 
