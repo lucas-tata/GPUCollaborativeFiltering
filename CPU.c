@@ -86,6 +86,15 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
 
     ////////////////////////////////////
 
+    for(int i = 0; i < endOfArtistIndex; i++)
+    {
+        for(int j = 0; j < endOfUserIndex; j++)
+        {
+            dataMatrix[i * SPARSE_SIZE + j] = dataMatrix[i * SPARSE_SIZE + j] * alpha_val;
+        }
+    }
+
+    
     
     
 }
@@ -169,14 +178,14 @@ int main (int args, char **argv)
     printf("artists size is %d ", endOfArtistIndex);
     printf("users size is %d ", endOfUserIndex);
 
-    for(i = 0; i < endOfUserIndex; i++)
+    /*for(i = 0; i < endOfUserIndex; i++)
 	{
         for(j = 0; j < endOfArtistIndex; j++)
         {
             printf("%d ", dataMatrix[i*SPARSE_SIZE + j]);
         }
         printf("\n");
-	}
+	}*/
 	implicit_als(40, 10, 0.1, 10);
 	return 0;
 }
