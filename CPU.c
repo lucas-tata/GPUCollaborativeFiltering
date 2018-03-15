@@ -26,6 +26,7 @@ CPU Implementation
 int *dataMatrix, *X, *Y, *X_T, *Y_T; //our output sparse matrix (users by artists, data is the play count) 
 char **artists;
 char **users;
+char **artistNames;
 int endOfArtistIndex = 0; //keep tabs on how many artists are currently in there
 int endOfUserIndex = 0; //keep tabs on how many users are currently in there
 
@@ -329,7 +330,7 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
 
 int main (int args, char **argv)
 {
-    
+    int newname = 0;
     dataMatrix = (int *)malloc(sizeof(int) * SPARSE_SIZE * SPARSE_SIZE);
     
 	users = malloc(sizeof(char*) * USER_SIZE);
@@ -341,6 +342,11 @@ int main (int args, char **argv)
     for(int i = 0; i < ARTIST_SIZE; i++)
     {
         artists[i] = malloc(50 * sizeof(char));
+    }
+    artistNames = malloc(sizeof(char*) * ARTIST_SIZE);
+    for(int i = 0; i < ARTIST_SIZE; i++)
+    {
+        artistNames[i] = malloc(50 * sizeof(char));
     }
     FILE* data = fopen("usersha1-artmbid-artname-plays.tsv", "r"); //our dataset file (tab separated file)
 	if(data == NULL)
@@ -377,16 +383,19 @@ int main (int args, char **argv)
                 }
                 else if (j == 1) //artist id, check if its in the artist list: if not, add to list, if it is, save the index
                 {
+                    newname = 0;
                     currentArtistIndex = checkIfArtistExistsInData(token);
                     if(currentArtistIndex == -1) //must add to artists
                     {
                         currentArtistIndex = endOfArtistIndex;
-                        strcpy(artists[endOfArtistIndex++], token);
+                        strcpy(artists[endOfArtistIndex], token);
+                        newname = 1;
                     }
                 }
                 else if(j == 2)//artist name, doesnt really matter right now
                 {
-                    
+                    if(newname == 1)
+                    strcpy(artists[endOfArtistIndex++], token);
                 }
                 else if(j == 3) //plays, use the indexes to see where they should go in the data (sparse matrix)
                 {
@@ -413,7 +422,7 @@ int main (int args, char **argv)
     recommend(1, NUM_RECOMMENDATIONS, ans);
     for(int i = 0; i < NUM_RECOMMENDATIONS; i++)
     {
-        printf("%s ", artists[ans[i]]);
+        printf("%s ", artistNames[ans[i]]);
     }
 	return 0;
 }
