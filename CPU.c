@@ -12,16 +12,16 @@ CPU Implementation
 #include <assert.h>
 #include <math.h>
 
-#define INPUT_SIZE 16384
-#define SPARSE_SIZE 8192
+#define INPUT_SIZE 16384 //how many lines to read from the dataset
+#define SPARSE_SIZE 8192 //size of sparse matrix is sparse_size * sparse_size
 #define USER_SIZE 2048
 #define ARTIST_SIZE 8192
 #define LINE_SIZE 1024
-#define RAND_RANGE 100
-#define NUM_RECOMMENDATIONS 5
-#define NUM_FEATURES 10
-#define ITERATIONS 1
-
+#define RAND_RANGE 100 //sets the random number generation range
+#define NUM_RECOMMENDATIONS 5 //number of recommendations to generate for the user
+#define NUM_FEATURES 10 //number of features to generate for each user in the algorithm
+#define ITERATIONS 1 //how many iterations you want to run the algorithm with
+#define USER_ID 1 //indicates which user you want to generate recommendations for
 
 int *dataMatrix, *X, *Y, *X_T, *Y_T; //our output sparse matrix (users by artists, data is the play count) 
 char **artists;
@@ -97,7 +97,7 @@ void recommend(int user_id, int num_items, int * answer)
     int maxVal = 0, index = 0, no = 0;
     for(int i = 0; i < endOfArtistIndex; i++)
     {
-        user_recs[i] = dataMatrix[user_id*endOfArtistIndex + i];
+        user_recs[i] = dataMatrix[user_id*SPARSE_SIZE + i];
         if(user_recs[i] == 0)
         {
             user_recs[i] = 1;
@@ -110,7 +110,7 @@ void recommend(int user_id, int num_items, int * answer)
 
     for(int i = 0; i < NUM_FEATURES; i++)
     {
-        X_rec[i] = X[user_id * endOfArtistIndex + i];
+        X_rec[i] = X[user_id * NUM_FEATURES + i];
     }
 
     mat_vec_multiply(Y_T, X_rec, rec_vector, NUM_FEATURES, endOfArtistIndex);
@@ -392,7 +392,7 @@ int main (int args, char **argv)
                         newname = 1;
                     }
                 }
-                else if(j == 2)//artist name, doesnt really matter right now
+                else if(j == 2)//artist name
                 {
                     if(newname == 1)
                     strcpy(artistNames[endOfArtistIndex++], token);
@@ -412,17 +412,15 @@ int main (int args, char **argv)
 			break;
 		}
     }
-	
-    printf("artists size is %d ", endOfArtistIndex);
-    printf("users size is %d ", endOfUserIndex);
 
     int *ans;
     ans = (int *)malloc(sizeof(int) * NUM_RECOMMENDATIONS);
 	implicit_als(40, ITERATIONS, 0.1, 10);
-    recommend(1, NUM_RECOMMENDATIONS, ans);
+    recommend(USER_ID, NUM_RECOMMENDATIONS, ans);
+    printf("User %d Recommendations: \n", USER_ID);
     for(int i = 0; i < NUM_RECOMMENDATIONS; i++)
     {
-        printf("%s ", artistNames[ans[i]]);
+        printf("%s\n", artistNames[ans[i]]);
     }
 	return 0;
 }
