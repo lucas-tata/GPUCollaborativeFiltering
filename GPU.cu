@@ -11,6 +11,8 @@ GPU Implementation
 #include <string.h>
 #include <assert.h>
 #include <math.h>
+#include "../helper/util.h"
+#include "../helper/wtime.h"
 
 #define INPUT_SIZE 16384 //how many lines to read from the dataset
 #define SPARSE_SIZE 8192 //size of sparse matrix is sparse_size * sparse_size
@@ -22,6 +24,7 @@ GPU Implementation
 #define NUM_FEATURES 10 //number of features to generate for each user in the algorithm
 #define ITERATIONS 1 //how many iterations you want to run the algorithm with
 #define USER_ID 1 //indicates which user you want to generate recommendations for
+#define SHARED_SIZE 100
 
 int *dataMatrix, *X, *Y, *X_T, *Y_T; //our output sparse matrix (users by artists, data is the play count) 
 char **artists;
@@ -42,8 +45,98 @@ __global__ void gpu_mat_mat_multiply(int *a, int *b, int *c, int num_rows, int n
         {
             res += a[row * num_cols + j] * b[col + num_rows * j];
         }
+        
         c[tid] = res;
         tid+= blockDim.x * gridDim.x;
+    }
+}
+
+__global__ void gpu_mat_mat_multiply_shared(int *a, int *b, int *c, int num_rows, int num_cols, int num_rows2)
+{
+    __shared__ int sres[NUM_FEATURES];
+    int bid = blockIdx.x;
+    while(bid < num_rows*num_rows2)
+    {
+        int row = bid / num_cols;
+        int col = bid % num_cols;
+        int tid = threadIdx.x;
+        while(tid < num_cols)
+        {
+            sres[tid] = a[row * num_cols + tid] * b[col + num_rows * tid];
+            tid += blockDim.x;
+        }
+        __syncthreads();
+        for(int i = num_cols/2 ; i > 0; i /= 2)
+        {
+            if(threadIdx.x < i)
+            {
+                int temp = sres[threadIdx.x] + sres[threadIdx.x + i];
+                sres[threadIdx.x] = temp;
+            }
+            __syncthreads();
+        }
+        if(threadIdx.x == 0)
+        c[bid] = sres[threadIdx.x];
+        bid += gridDim.x;
+        __syncthreads();
+    }
+}
+
+__global__ void
+gpu_mat_vec_multiply_shared(int *mat, int *vec, int *res, int num_rows, int num_cols)
+{
+    __shared__ int svec[256];
+    __shared__ int sres[256];
+    svec[threadIdx.x] = vec[threadIdx.x];
+	int bid = blockIdx.x;
+    __syncthreads();
+	while (bid < num_rows)
+	{
+        sres[threadIdx.x] = mat[bid * num_cols + threadIdx.x] * svec[threadIdx.x];
+        __syncthreads();
+        for(int i = blockDim.x/2 ; i > 0; i /= 2)
+        {
+            if(threadIdx.x < i)
+            {
+                int temp = sres[threadIdx.x] + sres[threadIdx.x + i];
+                sres[threadIdx.x] = temp;
+            }
+            __syncthreads();
+        }
+        if(threadIdx.x == 0)
+        res[bid] = sres[threadIdx.x];
+		bid += 128;
+        __syncthreads();
+	}
+}
+
+__global__ void gpu_matrix_transpose(int *mat, int *res, int num_rows, int num_cols)
+{
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    while(tid < num_rows*num_cols)
+    {
+        int in_row = tid / num_cols;
+        int in_col = tid % num_cols;
+        int out_row = in_col;
+        int out_col = in_row;
+        res [out_row * num_cols + out_col] = mat [in_row * num_cols + in_col];
+        tid += blockDim.x * gridDim.x;
+
+    }
+}
+
+__global__ void gpu_matrix_alpha(int *mat, int *res, float alpha_val, int num_rows, int num_cols)
+{
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    while(tid < num_rows*num_cols)
+    {
+        int in_row = tid / num_cols;
+        int in_col = tid % num_cols;
+        int out_row = in_col;
+        int out_col = in_row;
+        res [out_row * num_cols + out_col] = mat [in_row * num_cols + in_col];
+        tid += blockDim.x * gridDim.x;
+
     }
 }
 
@@ -134,7 +227,20 @@ void recommend(int user_id, int num_items, int * answer)
 
     
 
-    mat_vec_multiply(Y_T, X_rec, rec_vector, NUM_FEATURES, endOfArtistIndex); 
+    //mat_vec_multiply(Y_T, X_rec, rec_vector, NUM_FEATURES, endOfArtistIndex); 
+
+
+    int *mat_d, *vec_d, *res_vec_d;
+    cudaMalloc((void **)&mat_d, sizeof(int) * endOfArtistIndex * NUM_FEATURES);
+    cudaMalloc((void **)&vec_d, sizeof(int) * endOfArtistIndex);
+    cudaMalloc((void **)&res_vec_d, sizeof(int) * endOfArtistIndex);
+
+    cudaMemcpy(mat_d, Y_T, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
+    cudaMemcpy(vec_d, X_rec, sizeof(int) * endOfArtistIndex, cudaMemcpyHostToDevice);
+
+    gpu_mat_vec_multiply_shared<<<256, 256>>>(mat_d, vec_d, res_vec_d, NUM_FEATURES, endOfArtistIndex);
+
+    cudaMemcpy(rec_vector, res_vec_d, sizeof(int) * endOfArtistIndex, cudaMemcpyDeviceToHost);
 	//*********GPU*********//
 
     for(int i = 0; i < num_items; i++)
@@ -165,6 +271,8 @@ void recommend(int user_id, int num_items, int * answer)
 
 int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
 {
+
+    //GPU alpha mult//
     for(int i = 0; i < endOfArtistIndex; i++)
     {
         for(int j = 0; j < endOfUserIndex; j++)
@@ -172,6 +280,7 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
             dataMatrix[i * SPARSE_SIZE + j] = dataMatrix[i * SPARSE_SIZE + j] * alpha_val;
         }
     }
+    //NEWGPU//
     
     int *X_P, *Y_P; 
 
@@ -184,6 +293,7 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
     X_P = (int *)malloc(sizeof(int) * endOfUserIndex * endOfUserIndex);
     Y_P = (int *)malloc(sizeof(int) * endOfArtistIndex * endOfArtistIndex);
     
+    //GPU random//
     for(int i = 0; i < endOfUserIndex; i++)
     {
         for(int j = 0; j < features; j++)
@@ -191,18 +301,32 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
             X[i * features + j] = rand() % RAND_RANGE;
         }
     }
+    //NEWGPU//
 
-    for(int i = 0; i < endOfUserIndex; i++)
+    //GPU transpose//
+    /*for(int i = 0; i < endOfUserIndex; i++)
     {
         for(int j = 0; j < features; j++)
         {
             X_T[j * endOfUserIndex + i] = X[i*features + j];
         }
-    }
+    }*/
+
+    int *m1, *t1;
+    cudaMalloc((void **)&m1, sizeof(int) * endOfUserIndex * NUM_FEATURES);
+    cudaMalloc((void **)&t1, sizeof(int) * endOfUserIndex * NUM_FEATURES);
+
+    cudaMemcpy(m1, X, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
+
+    gpu_matrix_transpose<<<256, 256>>>(m1, t1, endOfUserIndex, NUM_FEATURES);
+
+    cudaMemcpy(X_T, t1, sizeof(int) * endOfUserIndex * endOfUserIndex, cudaMemcpyDeviceToHost);
+
+    //NEWGPU//
 
 
 
-
+    //GPU random//
     for(int i = 0; i < endOfArtistIndex; i++)
     {
         for(int j = 0; j < features; j++)
@@ -210,13 +334,25 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
             Y[i * features + j] = rand() % RAND_RANGE;
         }
     }
-    for(int i = 0; i < endOfArtistIndex; i++)
+
+    //GPU transpose
+    /*for(int i = 0; i < endOfArtistIndex; i++)
     {
         for(int j = 0; j < features; j++)
         {
             Y_T[j * endOfArtistIndex + i] = Y[i * features + j];
         }
-    }
+    }*/
+
+    int *m2, *t2;
+    cudaMalloc((void **)&m2, sizeof(int) * endOfUserIndex * NUM_FEATURES);
+    cudaMalloc((void **)&t2, sizeof(int) * endOfUserIndex * NUM_FEATURES);
+
+    cudaMemcpy(m2, Y, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
+
+    gpu_matrix_transpose<<<256, 256>>>(m2, t2, endOfUserIndex, NUM_FEATURES);
+
+    cudaMemcpy(Y_T, t2, sizeof(int) * endOfUserIndex * endOfUserIndex, cudaMemcpyDeviceToHost);
 
 
     int *X_I, *Y_I, *I, *I1, *user_row, *artist_row, *user_pref, *artist_pref, *user_confidence, *artist_confidence, *user_confidence_I, *artist_confidence_I; 
@@ -244,6 +380,8 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
     Y_result_y = (int *)malloc(sizeof(int) * endOfArtistIndex * endOfArtistIndex);
     Y_result_pu = (int *)malloc(sizeof(int) * endOfArtistIndex * endOfArtistIndex);
 
+
+    //GPU???///
     for(int i = 0; i < endOfUserIndex; i++)
     {
         X_I[i * endOfUserIndex + i] = 1;
@@ -384,7 +522,10 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
 			//*********GPU*********//
             for(int k = 0; k < features; k++)
             {
-                X[i*features + k] = Y_result_y[i*features + k] / Y_result_pu[i*features + k];
+                if(Y_result_pu[i*features + k] == 0)
+                    X[i*features + k] = 0;
+                else
+                    X[i*features + k] = Y_result_y[i*features + k] / Y_result_pu[i*features + k];
             }
         }
         for(int j = 0; j < endOfArtistIndex; j++)
@@ -577,7 +718,11 @@ int main (int args, char **argv)
 
     int *ans;
     ans = (int *)malloc(sizeof(int) * NUM_RECOMMENDATIONS);
+	double time_beg = wtime();
 	implicit_als(40, ITERATIONS, 0.1, 10);
+	double elapsed_time = wtime();
+    elapsed_time -= time_beg;
+    printf("elapsed time is: %f\n", elapsed_time);
     recommend(USER_ID, NUM_RECOMMENDATIONS, ans);
     printf("User %d Recommendations: \n", USER_ID);
     for(int i = 0; i < NUM_RECOMMENDATIONS; i++)
