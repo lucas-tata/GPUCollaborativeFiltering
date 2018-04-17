@@ -11,6 +11,7 @@ GPU Implementation
 #include <string.h>
 #include <assert.h>
 #include <math.h>
+#include <limits.h>
 #include "../helper/util.h"
 #include "../helper/wtime.h"
 
@@ -25,6 +26,7 @@ GPU Implementation
 #define ITERATIONS 1 //how many iterations you want to run the algorithm with
 #define USER_ID 1 //indicates which user you want to generate recommendations for
 #define SHARED_SIZE 100
+#define SPLIT 25
 
 int *dataMatrix, *X, *Y, *X_T, *Y_T; //our output sparse matrix (users by artists, data is the play count) 
 char **artists;
@@ -82,6 +84,33 @@ __global__ void gpu_mat_mat_multiply_shared(int *a, int *b, int *c, int num_rows
     }
 }
 
+__global__ void gpu_mat_mat_multiply_shared_atomic(int *a, int *b, int *c, int num_rows, int num_cols, int num_rows2)
+{
+    __shared__ int sres[SPLIT][NUM_FEATURES];
+    int bid = blockIdx.x;
+    while(bid < num_rows*num_rows2)
+    {
+        int tid = threadIdx.x;
+        int row = bid / num_cols + tid / SPLIT;
+        int col = bid % num_cols;
+        while(tid < num_cols*SPLIT)
+        {
+            sres[tid/SPLIT][tid%SPLIT] = a[row * num_cols + tid%SPLIT] * b[col + num_rows * tid%SPLIT];
+            tid += blockDim.x;
+        }
+        __syncthreads();
+        tid = threadIdx.x;
+        while (tid < num_cols*SPLIT)
+        {
+            atomicAdd(&c[bid + tid/SPLIT], sres[tid/SPLIT][tid%SPLIT]);
+            tid += blockDim.x;
+        }
+        bid += gridDim.x;
+        __syncthreads();
+    }
+}
+
+
 __global__ void
 gpu_mat_vec_multiply_shared(int *mat, int *vec, int *res, int num_rows, int num_cols)
 {
@@ -109,6 +138,7 @@ gpu_mat_vec_multiply_shared(int *mat, int *vec, int *res, int num_rows, int num_
         __syncthreads();
 	}
 }
+
 
 __global__ void gpu_matrix_transpose(int *mat, int *res, int num_rows, int num_cols)
 {
@@ -139,6 +169,33 @@ __global__ void gpu_matrix_alpha(int *mat, int *res, float alpha_val, int num_ro
 
     }
 }
+
+__global__ void gpu_matrix_addition(int *mat1, int *mat2, int *res, int num_rows, int num_cols)
+{
+    int tid = threadIdx.x;
+    while(tid < num_rows*num_cols)
+    {
+        int row = tid / num_cols;
+        int col = tid % num_cols;
+        res [row * num_cols + col] += mat1[row * num_cols + col] + mat2[row * num_cols + col];
+        tid += blockDim.x * gridDim.x;
+
+    }
+}
+
+__global__ void gpu_mat_div(int *mat1, int *mat2, int *res, int num_rows, int num_cols)
+{
+    int tid = threadIdx.x;
+    while(tid < num_rows*num_cols)
+    {
+        int row = tid / num_cols;
+        int col = tid % num_cols;
+        res [row * num_cols + col] = mat1[row * num_cols + col] / mat2[row * num_cols + col];
+        tid += blockDim.x * gridDim.x;
+
+    }
+}
+
 
 int checkIfArtistExistsInData(char * artist)
 {
@@ -198,6 +255,7 @@ void mat_vec_multiply(int *mat, int *vec, int *res, int num_rows, int num_cols)
 	}
 }
 
+
 void recommend(int user_id, int num_items, int * answer)
 {
     int *user_recs, *rec_vector, *X_rec;
@@ -207,6 +265,7 @@ void recommend(int user_id, int num_items, int * answer)
     int maxVal = 0, index = 0, no = 0;
     for(int i = 0; i < endOfArtistIndex; i++)
     {
+        
         user_recs[i] = dataMatrix[user_id*SPARSE_SIZE + i];
         if(user_recs[i] == 0)
         {
@@ -227,10 +286,10 @@ void recommend(int user_id, int num_items, int * answer)
 
     
 
-    //mat_vec_multiply(Y_T, X_rec, rec_vector, NUM_FEATURES, endOfArtistIndex); 
+    mat_vec_multiply(Y_T, X_rec, rec_vector, NUM_FEATURES, endOfArtistIndex); 
 
 
-    int *mat_d, *vec_d, *res_vec_d;
+    /*int *mat_d, *vec_d, *res_vec_d;
     cudaMalloc((void **)&mat_d, sizeof(int) * endOfArtistIndex * NUM_FEATURES);
     cudaMalloc((void **)&vec_d, sizeof(int) * endOfArtistIndex);
     cudaMalloc((void **)&res_vec_d, sizeof(int) * endOfArtistIndex);
@@ -240,12 +299,13 @@ void recommend(int user_id, int num_items, int * answer)
 
     gpu_mat_vec_multiply_shared<<<256, 256>>>(mat_d, vec_d, res_vec_d, NUM_FEATURES, endOfArtistIndex);
 
-    cudaMemcpy(rec_vector, res_vec_d, sizeof(int) * endOfArtistIndex, cudaMemcpyDeviceToHost);
+    cudaMemcpy(rec_vector, res_vec_d, sizeof(int) * endOfArtistIndex, cudaMemcpyDeviceToHost);*/
 	//*********GPU*********//
 
     for(int i = 0; i < num_items; i++)
     {
-        maxVal = 0, index = 0;
+        
+        maxVal = INT_MIN, index = 0;
         for(int j = 0; j < endOfArtistIndex; j++)
         {
             no = 0;
@@ -272,6 +332,12 @@ void recommend(int user_id, int num_items, int * answer)
 int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
 {
 
+    size_t available, total;
+    cudaMemGetInfo(&available, &total);
+    printf("%u %u\n", available, total);
+    double time_beg = wtime();
+
+    
     //GPU alpha mult//
     for(int i = 0; i < endOfArtistIndex; i++)
     {
@@ -313,14 +379,19 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
     }*/
 
     int *m1, *t1;
-    cudaMalloc((void **)&m1, sizeof(int) * endOfUserIndex * NUM_FEATURES);
-    cudaMalloc((void **)&t1, sizeof(int) * endOfUserIndex * NUM_FEATURES);
+    H_ERR(cudaMalloc((void **)&m1, sizeof(int) * endOfUserIndex * NUM_FEATURES));
+    H_ERR(cudaMalloc((void **)&t1, sizeof(int) * endOfUserIndex * NUM_FEATURES));
 
-    cudaMemcpy(m1, X, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
+    H_ERR(cudaMemcpy(m1, X, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
 
     gpu_matrix_transpose<<<256, 256>>>(m1, t1, endOfUserIndex, NUM_FEATURES);
 
-    cudaMemcpy(X_T, t1, sizeof(int) * endOfUserIndex * endOfUserIndex, cudaMemcpyDeviceToHost);
+    H_ERR(cudaMemcpy(X_T, t1, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyDeviceToHost));
+
+    H_ERR(cudaFree(m1));
+    H_ERR(cudaFree(t1));
+
+    
 
     //NEWGPU//
 
@@ -343,16 +414,26 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
             Y_T[j * endOfArtistIndex + i] = Y[i * features + j];
         }
     }*/
+    
 
     int *m2, *t2;
-    cudaMalloc((void **)&m2, sizeof(int) * endOfUserIndex * NUM_FEATURES);
-    cudaMalloc((void **)&t2, sizeof(int) * endOfUserIndex * NUM_FEATURES);
+    H_ERR(cudaMalloc((void **)&m2, sizeof(int) * endOfUserIndex * NUM_FEATURES));
+    H_ERR(cudaMalloc((void **)&t2, sizeof(int) * endOfUserIndex * NUM_FEATURES));
 
-    cudaMemcpy(m2, Y, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
+    H_ERR(cudaMemcpy(m2, Y, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
 
     gpu_matrix_transpose<<<256, 256>>>(m2, t2, endOfUserIndex, NUM_FEATURES);
 
-    cudaMemcpy(Y_T, t2, sizeof(int) * endOfUserIndex * endOfUserIndex, cudaMemcpyDeviceToHost);
+    H_ERR(cudaMemcpy(Y_T, t2, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyDeviceToHost));
+
+    H_ERR(cudaFree(m2));
+    H_ERR(cudaFree(t2));
+
+    double elapsed_time = wtime();
+    elapsed_time -= time_beg;
+    //printf("setup elapsed time is: %f\n", elapsed_time);
+
+    time_beg = wtime();
 
 
     int *X_I, *Y_I, *I, *I1, *user_row, *artist_row, *user_pref, *artist_pref, *user_confidence, *artist_confidence, *user_confidence_I, *artist_confidence_I; 
@@ -403,35 +484,65 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
 
 	//*********GPU*********//
 
-    //mat_mat_multiply(X, X_T, X_P, endOfUserIndex, features, endOfUserIndex);//
+    
+    //mat_mat_multiply(X, X_T, X_P, endOfUserIndex, features, endOfUserIndex);
     int *mat1_d, *mat2_d, *res_d;
-    cudaMalloc((void **)&mat1_d, sizeof(int) * endOfUserIndex * NUM_FEATURES);
-    cudaMalloc((void **)&mat2_d, sizeof(int) * endOfUserIndex * NUM_FEATURES);
-    cudaMalloc((void **)&res_d, sizeof(int) * endOfUserIndex * endOfUserIndex);
+    H_ERR(cudaMalloc((void **)&mat1_d, sizeof(int) * endOfUserIndex * NUM_FEATURES));
+    H_ERR(cudaMalloc((void **)&mat2_d, sizeof(int) * endOfUserIndex * NUM_FEATURES));
+    H_ERR(cudaMalloc((void **)&res_d, sizeof(int) * endOfUserIndex * endOfUserIndex));
 
-    cudaMemcpy(mat1_d, X, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
-    cudaMemcpy(mat2_d, X_T, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
+    
+
+    H_ERR(cudaMemcpy(mat1_d, X, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+    H_ERR(cudaMemcpy(mat2_d, X_T, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+
+    
 
     gpu_mat_mat_multiply<<<256, 256>>>(mat1_d, mat2_d, res_d, endOfUserIndex, NUM_FEATURES, endOfUserIndex);
 
-    cudaMemcpy(X_P, res_d, sizeof(int) * endOfUserIndex * endOfUserIndex, cudaMemcpyDeviceToHost);
+    H_ERR(cudaMemcpy(X_P, res_d, sizeof(int) * endOfUserIndex * endOfUserIndex, cudaMemcpyDeviceToHost));
+
+    
+
+    H_ERR(cudaFree(mat1_d));
+    H_ERR(cudaFree(mat2_d));
+    H_ERR(cudaFree(res_d));
+
+    
 
     
     //mat_mat_multiply(Y, Y_T, Y_P, endOfArtistIndex, features, endOfArtistIndex);//
     int *mat1_2d, *mat2_2d, *res_2d;
-    cudaMalloc((void **)&mat1_2d, sizeof(int) * endOfArtistIndex * NUM_FEATURES);
-    cudaMalloc((void **)&mat2_2d, sizeof(int) * endOfArtistIndex * NUM_FEATURES);
-    cudaMalloc((void **)&res_2d, sizeof(int) * endOfArtistIndex * endOfArtistIndex);
 
-    cudaMemcpy(mat1_2d, Y, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
-    cudaMemcpy(mat2_2d, Y_T, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
+    printf("%u\n", sizeof(int) * endOfArtistIndex * NUM_FEATURES * 2 + sizeof(int) * endOfArtistIndex * endOfArtistIndex);
+    H_ERR(cudaMalloc((void **)&mat1_2d, sizeof(int) * endOfArtistIndex * NUM_FEATURES));
+    H_ERR(cudaMalloc((void **)&mat2_2d, sizeof(int) * endOfArtistIndex * NUM_FEATURES));
+    H_ERR(cudaMalloc((void **)&res_2d, sizeof(int) * endOfArtistIndex * endOfArtistIndex));
+
+    H_ERR(cudaMemcpy(mat1_2d, Y, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+    H_ERR(cudaMemcpy(mat2_2d, Y_T, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
 
     gpu_mat_mat_multiply<<<256, 256>>>(mat1_2d, mat2_2d, res_2d, endOfArtistIndex, NUM_FEATURES, endOfArtistIndex);
 
-    cudaMemcpy(Y_P, res_2d, sizeof(int) * endOfArtistIndex * endOfArtistIndex, cudaMemcpyDeviceToHost);
+    cudaMemGetInfo(&available, &total);
+    printf("%u %u\n", available, total);
+
+    H_ERR(cudaMemcpy(Y_P, res_2d, sizeof(int) * endOfArtistIndex * endOfArtistIndex, cudaMemcpyDeviceToHost));
+
+    
+    
+
+    H_ERR(cudaFree(mat1_2d));
+    H_ERR(cudaFree(mat2_2d));
+    H_ERR(cudaFree(res_2d));
 
 	//*********GPU*********//
 
+    elapsed_time = wtime();
+    elapsed_time -= time_beg;
+    //printf("part 1 elapsed time is: %f\n", elapsed_time);
+
+    time_beg = wtime();
 
     for(int i = 0; i < iterations; i++)
     {
@@ -455,78 +566,133 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
                 user_confidence_I[k * features + k] = user_row[k];
                 user_confidence[k * features + k] = user_row[k] + 1;
             }
+            elapsed_time = wtime();
+            elapsed_time -= time_beg;
+            //printf("part 2 elapsed time is: %f\n", elapsed_time);
 
+            time_beg = wtime();
             //*********GPU*********//
-            // mat_mat_multiply(Y_T, user_confidence_I, Y_temp, endOfArtistIndex, features, features);//
+             //mat_mat_multiply(Y_T, user_confidence_I, Y_temp, endOfArtistIndex, features, features);//
             int *mat1_3d, *mat2_3d, *res_3d;
-            cudaMalloc((void **)&mat1_3d, sizeof(int) * endOfArtistIndex * NUM_FEATURES);
-            cudaMalloc((void **)&mat2_3d, sizeof(int) * NUM_FEATURES * NUM_FEATURES);
-            cudaMalloc((void **)&res_3d, sizeof(int) * endOfArtistIndex * NUM_FEATURES);
+            H_ERR(cudaMalloc((void **)&mat1_3d, sizeof(int) * endOfArtistIndex * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&mat2_3d, sizeof(int) * NUM_FEATURES * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&res_3d, sizeof(int) * endOfArtistIndex * NUM_FEATURES));
 
-            cudaMemcpy(mat1_3d, Y_T, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
-            cudaMemcpy(mat2_3d, user_confidence_I, sizeof(int) * NUM_FEATURES * NUM_FEATURES, cudaMemcpyHostToDevice);
+            H_ERR(cudaMemcpy(mat1_3d, Y_T, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+            H_ERR(cudaMemcpy(mat2_3d, user_confidence_I, sizeof(int) * NUM_FEATURES * NUM_FEATURES, cudaMemcpyHostToDevice));
 
             gpu_mat_mat_multiply<<<256, 256>>>(mat1_3d, mat2_3d, res_3d, endOfArtistIndex, NUM_FEATURES, NUM_FEATURES);
 
-            cudaMemcpy(Y_temp, res_3d, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyDeviceToHost);
+            H_ERR(cudaMemcpy(Y_temp, res_3d, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyDeviceToHost));
+
+            H_ERR(cudaFree(mat1_3d));
+            H_ERR(cudaFree(mat2_3d));
+            H_ERR(cudaFree(res_3d));
+
+            
            
             //mat_mat_multiply(Y_temp, Y, Y_result_y, endOfArtistIndex, features, endOfArtistIndex);//
 
-            int *mat1_4d, *mat2_4d, *res_4d;
-            cudaMalloc((void **)&mat1_4d, sizeof(int) * endOfArtistIndex * NUM_FEATURES);
-            cudaMalloc((void **)&mat2_4d, sizeof(int) * endOfArtistIndex * NUM_FEATURES);
-            cudaMalloc((void **)&res_4d, sizeof(int) * endOfArtistIndex * endOfArtistIndex);
+            elapsed_time = wtime();
+            elapsed_time -= time_beg;
+            //printf("part 3 elapsed time is: %f\n", elapsed_time);
 
-            cudaMemcpy(mat1_4d, Y_temp, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
-            cudaMemcpy(mat2_4d, Y, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
+            time_beg = wtime();
+
+            int *mat1_4d, *mat2_4d, *res_4d;
+            H_ERR(cudaMalloc((void **)&mat1_4d, sizeof(int) * endOfArtistIndex * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&mat2_4d, sizeof(int) * endOfArtistIndex * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&res_4d, sizeof(int) * endOfArtistIndex * endOfArtistIndex));
+
+            H_ERR(cudaMemcpy(mat1_4d, Y_temp, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+            H_ERR(cudaMemcpy(mat2_4d, Y, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
 
             gpu_mat_mat_multiply<<<256, 256>>>(mat1_4d, mat2_4d, res_4d, endOfArtistIndex, NUM_FEATURES, endOfArtistIndex);
 
-            cudaMemcpy(Y_result_y, res_4d, sizeof(int) * endOfArtistIndex * endOfArtistIndex, cudaMemcpyDeviceToHost);
+            H_ERR(cudaMemcpy(Y_result_y, res_4d, sizeof(int) * endOfArtistIndex * endOfArtistIndex, cudaMemcpyDeviceToHost));
+            H_ERR(cudaFree(mat1_4d));
+            H_ERR(cudaFree(mat2_4d));
+            H_ERR(cudaFree(res_4d));
 			//*********GPU*********//
-            for(int j = 0; j < endOfArtistIndex; j++)
+            /*for(int j = 0; j < endOfArtistIndex; j++)
             {
                 for(int k = 0; k < endOfArtistIndex; k++)
                 {
                     Y_result_y[j*endOfArtistIndex + k] += Y_P[j*endOfArtistIndex + k] + I1[j*endOfArtistIndex + k];
                 }
-            }
+            }*/
+
+            int *mat1_add, *mat2_add, *res_add;
+            H_ERR(cudaMalloc((void **)&mat1_add, sizeof(int) * endOfArtistIndex * endOfArtistIndex));
+            H_ERR(cudaMalloc((void **)&mat2_add, sizeof(int) * endOfArtistIndex * endOfArtistIndex));
+            H_ERR(cudaMalloc((void **)&res_add, sizeof(int) * endOfArtistIndex * endOfArtistIndex));
+
+            H_ERR(cudaMemcpy(mat1_add, Y_P, sizeof(int) * endOfArtistIndex * endOfArtistIndex, cudaMemcpyHostToDevice));
+            H_ERR(cudaMemcpy(mat2_add, I1, sizeof(int) * endOfArtistIndex * endOfArtistIndex, cudaMemcpyHostToDevice));
+            H_ERR(cudaMemcpy(res_add, Y_result_y, sizeof(int) * endOfArtistIndex * endOfArtistIndex, cudaMemcpyHostToDevice));
+
+            gpu_matrix_addition<<<256, 256>>>(mat1_add, mat2_add, res_add, endOfArtistIndex, endOfArtistIndex);
+
+            H_ERR(cudaMemcpy(Y_result_pu, res_add, sizeof(int) * endOfArtistIndex * endOfArtistIndex, cudaMemcpyDeviceToHost));
+
+            H_ERR(cudaFree(mat1_add));
+            H_ERR(cudaFree(mat2_add));
+            H_ERR(cudaFree(res_add));
+
 			//*********GPU*********//
+            elapsed_time = wtime();
+            elapsed_time -= time_beg;
+            //printf("part 4 elapsed time is: %f\n", elapsed_time);
+
+            time_beg = wtime();
             //mat_mat_multiply(Y_T, user_confidence, Y_temp_2, endOfArtistIndex, features, features);//
             int *mat1_5d, *mat2_5d, *res_5d;
-            cudaMalloc((void **)&mat1_5d, sizeof(int) * endOfArtistIndex * NUM_FEATURES);
-            cudaMalloc((void **)&mat2_5d, sizeof(int) * NUM_FEATURES * NUM_FEATURES);
-            cudaMalloc((void **)&res_5d, sizeof(int) * endOfArtistIndex * NUM_FEATURES);
+            H_ERR(cudaMalloc((void **)&mat1_5d, sizeof(int) * endOfArtistIndex * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&mat2_5d, sizeof(int) * NUM_FEATURES * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&res_5d, sizeof(int) * endOfArtistIndex * NUM_FEATURES));
 
-            cudaMemcpy(mat1_5d, Y_T, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
-            cudaMemcpy(mat2_5d, user_confidence, sizeof(int) * NUM_FEATURES * NUM_FEATURES, cudaMemcpyHostToDevice);
+            H_ERR(cudaMemcpy(mat1_5d, Y_T, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+            H_ERR(cudaMemcpy(mat2_5d, user_confidence, sizeof(int) * NUM_FEATURES * NUM_FEATURES, cudaMemcpyHostToDevice));
 
             gpu_mat_mat_multiply<<<256, 256>>>(mat1_5d, mat2_5d, res_5d, endOfArtistIndex, NUM_FEATURES, NUM_FEATURES);
 
-            cudaMemcpy(Y_temp_2, res_5d, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyDeviceToHost);
+            H_ERR(cudaMemcpy(Y_temp_2, res_5d, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyDeviceToHost));
+
+            H_ERR(cudaFree(mat1_5d));
+            H_ERR(cudaFree(mat2_5d));
+            H_ERR(cudaFree(res_5d));
 
             //mat_mat_multiply(Y_temp_2, Y, Y_result_pu, endOfArtistIndex, features, endOfArtistIndex);//
+            elapsed_time = wtime();
+            elapsed_time -= time_beg;
+            //printf("part 6 elapsed time is: %f\n", elapsed_time);
+
+            time_beg = wtime();
 
             int *mat1_6d, *mat2_6d, *res_6d;
-            cudaMalloc((void **)&mat1_6d, sizeof(int) * endOfArtistIndex * NUM_FEATURES);
-            cudaMalloc((void **)&mat2_6d, sizeof(int) * endOfArtistIndex * NUM_FEATURES);
-            cudaMalloc((void **)&res_6d, sizeof(int) * endOfArtistIndex * endOfArtistIndex);
+            H_ERR(cudaMalloc((void **)&mat1_6d, sizeof(int) * endOfArtistIndex * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&mat2_6d, sizeof(int) * endOfArtistIndex * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&res_6d, sizeof(int) * endOfArtistIndex * endOfArtistIndex));
 
-            cudaMemcpy(mat1_6d, Y_temp_2, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
-            cudaMemcpy(mat2_6d, Y, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
+            H_ERR(cudaMemcpy(mat1_6d, Y_temp_2, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+            H_ERR(cudaMemcpy(mat2_6d, Y, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
 
             gpu_mat_mat_multiply<<<256, 256>>>(mat1_6d, mat2_6d, res_6d, endOfArtistIndex, NUM_FEATURES, endOfArtistIndex);
 
-            cudaMemcpy(Y_result_pu, res_6d, sizeof(int) * endOfArtistIndex * endOfArtistIndex, cudaMemcpyDeviceToHost);
+            H_ERR(cudaMemcpy(Y_result_pu, res_6d, sizeof(int) * endOfArtistIndex * endOfArtistIndex, cudaMemcpyDeviceToHost));
+
+            H_ERR(cudaFree(mat1_6d));
+            H_ERR(cudaFree(mat2_6d));
+            H_ERR(cudaFree(res_6d));
 
 			//*********GPU*********//
-            for(int k = 0; k < features; k++)
+            /*for(int k = 0; k < features; k++)
             {
-                if(Y_result_pu[i*features + k] == 0)
-                    X[i*features + k] = 0;
-                else
-                    X[i*features + k] = Y_result_y[i*features + k] / Y_result_pu[i*features + k];
-            }
+                X[i*features + k] = Y_result_y[i*features + k] / Y_result_pu[i*features + k];
+            }*/
+
+            
+
         }
         for(int j = 0; j < endOfArtistIndex; j++)
         {
@@ -548,91 +714,182 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
                 artist_confidence[k * features + k] = artist_row[k] + 1;
             }
 			//*********GPU*********//
+            elapsed_time = wtime();
+            elapsed_time -= time_beg;
+            //printf("part 7 elapsed time is: %f\n", elapsed_time);
+
+            time_beg = wtime();
 
             //mat_mat_multiply(X_T, artist_confidence_I, X_temp, endOfUserIndex, features, features);//
 
             int *mat1_7d, *mat2_7d, *res_7d;
-            cudaMalloc((void **)&mat1_7d, sizeof(int) * endOfUserIndex * NUM_FEATURES);
-            cudaMalloc((void **)&mat2_7d, sizeof(int) * NUM_FEATURES * NUM_FEATURES);
-            cudaMalloc((void **)&res_7d, sizeof(int) * endOfUserIndex * NUM_FEATURES);
+            H_ERR(cudaMalloc((void **)&mat1_7d, sizeof(int) * endOfUserIndex * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&mat2_7d, sizeof(int) * NUM_FEATURES * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&res_7d, sizeof(int) * endOfUserIndex * NUM_FEATURES));
 
-            cudaMemcpy(mat1_7d, X_T, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
-            cudaMemcpy(mat2_7d, artist_confidence_I, sizeof(int) * NUM_FEATURES * NUM_FEATURES, cudaMemcpyHostToDevice);
+            H_ERR(cudaMemcpy(mat1_7d, X_T, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+            H_ERR(cudaMemcpy(mat2_7d, artist_confidence_I, sizeof(int) * NUM_FEATURES * NUM_FEATURES, cudaMemcpyHostToDevice));
 
             gpu_mat_mat_multiply<<<256, 256>>>(mat1_7d, mat2_7d, res_7d, endOfUserIndex, NUM_FEATURES, NUM_FEATURES);
 
-            cudaMemcpy(X_temp, res_7d, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyDeviceToHost);
+            H_ERR(cudaMemcpy(X_temp, res_7d, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyDeviceToHost));
 
+            H_ERR(cudaFree(mat1_7d));
+            H_ERR(cudaFree(mat2_7d));
+            H_ERR(cudaFree(res_7d));
+            
+            elapsed_time = wtime();
+            elapsed_time -= time_beg;
+            //printf("part 8 elapsed time is: %f\n", elapsed_time);
+
+            time_beg = wtime();
 
             //mat_mat_multiply(X_temp, X, X_result_x, endOfUserIndex, features, endOfUserIndex);//
 
             int *mat1_8d, *mat2_8d, *res_8d;
-            cudaMalloc((void **)&mat1_8d, sizeof(int) * endOfUserIndex * NUM_FEATURES);
-            cudaMalloc((void **)&mat2_8d, sizeof(int) * endOfUserIndex * NUM_FEATURES);
-            cudaMalloc((void **)&res_8d, sizeof(int) * endOfUserIndex * endOfUserIndex);
+            H_ERR(cudaMalloc((void **)&mat1_8d, sizeof(int) * endOfUserIndex * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&mat2_8d, sizeof(int) * endOfUserIndex * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&res_8d, sizeof(int) * endOfUserIndex * endOfUserIndex));
 
-            cudaMemcpy(mat1_8d, X_temp, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
-            cudaMemcpy(mat2_8d, X, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
+            H_ERR(cudaMemcpy(mat1_8d, X_temp, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+            H_ERR(cudaMemcpy(mat2_8d, X, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
 
             gpu_mat_mat_multiply<<<256, 256>>>(mat1_8d, mat2_8d, res_8d, endOfUserIndex, NUM_FEATURES, endOfUserIndex);
 
-            cudaMemcpy(X_result_x, res_8d, sizeof(int) * endOfUserIndex * endOfUserIndex, cudaMemcpyDeviceToHost);
+            H_ERR(cudaMemcpy(X_result_x, res_8d, sizeof(int) * endOfUserIndex * endOfUserIndex, cudaMemcpyDeviceToHost));
+
+            H_ERR(cudaFree(mat1_8d));
+            H_ERR(cudaFree(mat2_8d));
+            H_ERR(cudaFree(res_8d));
+
 			//*********GPU*********//
-            for(int j = 0; j < endOfUserIndex; j++)
+            /*for(int j = 0; j < endOfUserIndex; j++)
             {
                 for(int k = 0; k < endOfUserIndex; k++)
                 {
                     Y_result_y[j*endOfUserIndex + k] += Y_P[j*endOfUserIndex + k] + I1[j*endOfUserIndex + k];
                 }
-            }
+            }*/
+
+            int *mat1_add2, *mat2_add2, *res_add2;
+            H_ERR(cudaMalloc((void **)&mat1_add2, sizeof(int) * endOfUserIndex * endOfUserIndex));
+            H_ERR(cudaMalloc((void **)&mat2_add2, sizeof(int) * endOfUserIndex * endOfUserIndex));
+            H_ERR(cudaMalloc((void **)&res_add2, sizeof(int) * endOfUserIndex * endOfUserIndex));
+
+            H_ERR(cudaMemcpy(mat1_add2, Y_P, sizeof(int) * endOfUserIndex * endOfUserIndex, cudaMemcpyHostToDevice));
+            H_ERR(cudaMemcpy(mat2_add2, I1, sizeof(int) * endOfUserIndex * endOfUserIndex, cudaMemcpyHostToDevice));
+            H_ERR(cudaMemcpy(res_add2, Y_result_y, sizeof(int) * endOfUserIndex * endOfUserIndex, cudaMemcpyHostToDevice));
+
+            gpu_matrix_addition<<<256, 256>>>(mat1_add2, mat2_add2, res_add2, endOfUserIndex, endOfUserIndex);
+
+            H_ERR(cudaMemcpy(Y_result_y, res_add2, sizeof(int) * endOfUserIndex * endOfUserIndex, cudaMemcpyDeviceToHost));
+
+            H_ERR(cudaFree(mat1_add2));
+            H_ERR(cudaFree(mat2_add2));
+            H_ERR(cudaFree(res_add2));
 			//*********GPU*********//
 
             //mat_mat_multiply(X_T, artist_confidence, X_temp_2, endOfUserIndex, features, features);//
+            
+            elapsed_time = wtime();
+            elapsed_time -= time_beg;
+            //printf("part 9 elapsed time is: %f\n", elapsed_time);
+
+            time_beg = wtime();
 
             int *mat1_9d, *mat2_9d, *res_9d;
-            cudaMalloc((void **)&mat1_9d, sizeof(int) * endOfUserIndex * NUM_FEATURES);
-            cudaMalloc((void **)&mat2_9d, sizeof(int) * NUM_FEATURES * NUM_FEATURES);
-            cudaMalloc((void **)&res_9d, sizeof(int) * endOfUserIndex * NUM_FEATURES);
+            H_ERR(cudaMalloc((void **)&mat1_9d, sizeof(int) * endOfUserIndex * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&mat2_9d, sizeof(int) * NUM_FEATURES * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&res_9d, sizeof(int) * endOfUserIndex * NUM_FEATURES));
 
-            cudaMemcpy(mat1_9d, X_T, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
-            cudaMemcpy(mat2_9d, artist_confidence, sizeof(int) * NUM_FEATURES * NUM_FEATURES, cudaMemcpyHostToDevice);
+            H_ERR(cudaMemcpy(mat1_9d, X_T, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+            H_ERR(cudaMemcpy(mat2_9d, artist_confidence, sizeof(int) * NUM_FEATURES * NUM_FEATURES, cudaMemcpyHostToDevice));
 
             gpu_mat_mat_multiply<<<256, 256>>>(mat1_9d, mat2_9d, res_9d, endOfUserIndex, NUM_FEATURES, NUM_FEATURES);
 
-            cudaMemcpy(X_temp_2, res_9d, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyDeviceToHost);            
+            H_ERR(cudaMemcpy(X_temp_2, res_9d, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyDeviceToHost));       
 
+            H_ERR(cudaFree(mat1_9d));
+            H_ERR(cudaFree(mat2_9d));
+            H_ERR(cudaFree(res_9d));     
 
+            elapsed_time = wtime();
+            elapsed_time -= time_beg;
+            //printf("part 10 elapsed time is: %f\n", elapsed_time);
+
+            time_beg = wtime();
             //mat_mat_multiply(X_temp_2, X, X_result_pi, endOfUserIndex, features, endOfUserIndex);//
 
             int *mat1_10d, *mat2_10d, *res_10d;
-            cudaMalloc((void **)&mat1_10d, sizeof(int) * endOfUserIndex * NUM_FEATURES);
-            cudaMalloc((void **)&mat2_10d, sizeof(int) * endOfUserIndex * NUM_FEATURES);
-            cudaMalloc((void **)&res_10d, sizeof(int) * endOfUserIndex * endOfUserIndex);
+            H_ERR(cudaMalloc((void **)&mat1_10d, sizeof(int) * endOfUserIndex * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&mat2_10d, sizeof(int) * endOfUserIndex * NUM_FEATURES));
+            H_ERR(cudaMalloc((void **)&res_10d, sizeof(int) * endOfUserIndex * endOfUserIndex));
 
-            cudaMemcpy(mat1_10d, X_temp_2, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
-            cudaMemcpy(mat2_10d, X, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice);
+            H_ERR(cudaMemcpy(mat1_10d, X_temp_2, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+            H_ERR(cudaMemcpy(mat2_10d, X, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
 
             gpu_mat_mat_multiply<<<256, 256>>>(mat1_10d, mat2_10d, res_10d, endOfUserIndex, NUM_FEATURES, endOfUserIndex);
 
-            cudaMemcpy(X_result_pi, res_10d, sizeof(int) * endOfUserIndex * endOfUserIndex, cudaMemcpyDeviceToHost);   
+            H_ERR(cudaMemcpy(X_result_pi, res_10d, sizeof(int) * endOfUserIndex * endOfUserIndex, cudaMemcpyDeviceToHost));   
+
+            H_ERR(cudaFree(mat1_10d));
+            H_ERR(cudaFree(mat2_10d));
+            H_ERR(cudaFree(res_10d));
 
 			//*********GPU*********//
-            for(int k = 0; k < features; k++)
+            /*for(int k = 0; k < features; k++)
             {
-                if(X_result_pi[i*features + k] == 0)
-                    Y[i*features + k] = 0;
-                else
-                    Y[i*features + k] = X_result_x[i*features + k] / X_result_pi[i*features + k];
-            }
+                Y[i*features + k] = X_result_x[i*features + k] / X_result_pi[i*features + k];
+            }*/
+
+            
         }
-        
+
+        int *mat1_div, *mat2_div, *res_div;
+        H_ERR(cudaMalloc((void **)&mat1_div, sizeof(int) * endOfUserIndex * NUM_FEATURES));
+        H_ERR(cudaMalloc((void **)&mat2_div, sizeof(int) * endOfUserIndex * NUM_FEATURES));
+        H_ERR(cudaMalloc((void **)&res_div, sizeof(int) * endOfUserIndex * endOfUserIndex));
+
+        H_ERR(cudaMemcpy(mat1_div, Y_result_y, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+        H_ERR(cudaMemcpy(mat2_div, Y_result_pu, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+
+        gpu_mat_div<<<256, 256>>>(mat1_div, mat2_div, res_div, endOfUserIndex, NUM_FEATURES);
+
+        H_ERR(cudaMemcpy(X, res_div, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyDeviceToHost));
+
+        H_ERR(cudaFree(mat1_div));
+        H_ERR(cudaFree(mat2_div));
+        H_ERR(cudaFree(res_div));
+
+
+
+        int *mat1_div2, *mat2_div2, *res_div2;
+        H_ERR(cudaMalloc((void **)&mat1_div2, sizeof(int) * endOfArtistIndex * NUM_FEATURES));
+        H_ERR(cudaMalloc((void **)&mat2_div2, sizeof(int) * endOfArtistIndex * NUM_FEATURES));
+        H_ERR(cudaMalloc((void **)&res_div2, sizeof(int) * endOfArtistIndex * endOfArtistIndex));
+
+        H_ERR(cudaMemcpy(mat1_div2, X_result_x, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+        H_ERR(cudaMemcpy(mat2_div2, X_result_pi, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyHostToDevice));
+
+        gpu_mat_div<<<256, 256>>>(mat1_div2, mat2_div2, res_div2, endOfArtistIndex, NUM_FEATURES);
+
+        H_ERR(cudaMemcpy(Y, res_div2, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyDeviceToHost));
+
+        H_ERR(cudaFree(mat1_div2));
+        H_ERR(cudaFree(mat2_div2));
+        H_ERR(cudaFree(res_div2));
     }
+    elapsed_time = wtime();
+    elapsed_time -= time_beg;
+    //printf("part 11 elapsed time is: %f\n", elapsed_time);
 
 
 }
 
 int main (int args, char **argv)
 {
+    
+    double start_time = wtime();
     int newname = 0;
     dataMatrix = (int *)malloc(sizeof(int) * SPARSE_SIZE * SPARSE_SIZE);
     
@@ -654,7 +911,7 @@ int main (int args, char **argv)
     FILE* data = fopen("usersha1-artmbid-artname-plays.tsv", "r"); //our dataset file (tab separated file)
 	if(data == NULL)
 	{
-		printf("File read error");
+		//printf("File read error");
 		return 0;
 	}
 
@@ -718,17 +975,26 @@ int main (int args, char **argv)
 
     int *ans;
     ans = (int *)malloc(sizeof(int) * NUM_RECOMMENDATIONS);
-	double time_beg = wtime();
+    double time_beg = wtime();
 	implicit_als(40, ITERATIONS, 0.1, 10);
-	double elapsed_time = wtime();
+    double elapsed_time = wtime();
     elapsed_time -= time_beg;
-    printf("elapsed time is: %f\n", elapsed_time);
+    printf("implicit elapsed time is: %f\n", elapsed_time);
+    time_beg = wtime();
     recommend(USER_ID, NUM_RECOMMENDATIONS, ans);
+    elapsed_time = wtime();
+    elapsed_time -= time_beg;
+    printf("recommend elapsed time is: %f\n", elapsed_time);
     printf("User %d Recommendations: \n", USER_ID);
     for(int i = 0; i < NUM_RECOMMENDATIONS; i++)
     {
         printf("%s\n", artistNames[ans[i]]);
     }
+
+    elapsed_time = wtime();
+    elapsed_time -= start_time;
+    printf("total elapsed time is: %f\n", elapsed_time);
+    
 	return 0;
 }
 
