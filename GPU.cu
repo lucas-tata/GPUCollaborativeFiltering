@@ -15,8 +15,8 @@ GPU Implementation
 #include "../helper/util.h"
 #include "../helper/wtime.h"
 
-#define INPUT_SIZE 16384 //how many lines to read from the dataset
-#define SPARSE_SIZE 8192 //size of sparse matrix is sparse_size * sparse_size
+#define INPUT_SIZE 16000 //how many lines to read from the dataset
+#define SPARSE_SIZE 8000 //size of sparse matrix is sparse_size * sparse_size
 #define USER_SIZE 2048
 #define ARTIST_SIZE 8192
 #define LINE_SIZE 1024
@@ -269,6 +269,307 @@ void mat_vec_multiply(int *mat, int *vec, int *res, int num_rows, int num_cols)
 	}
 }
 
+__global__ void implicit_als_gpu(int *data, int *X, int *Y, int *X_T, int *Y_T, int *X_P, int *Y_P, int *X_I, int *Y_I, int *I, int *I1, int *user_row, int *artist_row, int *user_pref, int *artist_pref, int *user_confidence, int *artist_confidence, int *user_confidence_I, int *artist_confidence_I, int *X_temp, int *Y_temp, int *Y_result_y, int *Y_result_pu, int *Y_temp_2, int *X_result_x, int *X_result_pi, int *X_temp_2, int alpha_val, int iterations, double lambda_val, int features, int endOfArtistIndex, int endOfUserIndex)
+{
+    int tid = threadIdx.x;
+    while(tid < endOfArtistIndex*endOfUserIndex)
+    {
+        int i = tid / endOfUserIndex;
+        int j = tid % endOfUserIndex;
+        data[i * SPARSE_SIZE + j] = data[i * SPARSE_SIZE + j] * alpha_val;
+        tid += blockDim.x * gridDim.x;
+    }
+    tid = threadIdx.x;
+
+    while(tid < endOfUserIndex*features)
+    {
+        int i = tid / features;
+        int j = tid % features;
+        int in_row = tid / features;
+        int in_col = tid % features;
+        int out_row = in_col;
+        int out_col = in_row;
+        X_T [out_row * features + out_col] = X [in_row * features + in_col];
+        tid += blockDim.x * gridDim.x;
+    }
+
+    tid = threadIdx.x;
+
+    while(tid < endOfArtistIndex*features)
+    {
+        int i = tid / endOfArtistIndex;
+        int j = tid % endOfArtistIndex;
+        int in_row = tid / features;
+        int in_col = tid % features;
+        int out_row = in_col;
+        int out_col = in_row;
+        Y_T [out_row * features + out_col] = Y [in_row * features + in_col];
+        tid += blockDim.x * gridDim.x;
+    }
+
+    tid = threadIdx.x;
+
+    while(tid < endOfUserIndex)
+    {
+        X_I[tid * endOfUserIndex + tid] = 1;
+        tid += blockDim.x * gridDim.x;
+    }
+
+    tid = threadIdx.x;
+
+    while(tid < endOfArtistIndex)
+    {
+        Y_I[tid * endOfArtistIndex + tid] = 1;
+        I1[tid * endOfArtistIndex + tid] = lambda_val;
+        tid += blockDim.x * gridDim.x;
+    }
+
+    tid = threadIdx.x;
+
+    while(tid < features)
+    {
+        I[tid * features + tid] = 1;
+        tid += blockDim.x * gridDim.x;
+    }
+
+    tid = threadIdx.x;
+
+    int res;
+    int bid = blockIdx.x;
+    tid = threadIdx.x;
+    while(bid * SPLIT < endOfUserIndex*features)
+    {
+        int row = bid / features + tid / SPLIT;
+        int col = bid % features;
+        res = X[row * features + tid%SPLIT] * X_T[col + endOfUserIndex * tid%SPLIT];
+        __syncthreads();
+        atomicAdd(&X_P[bid + tid/SPLIT], res);
+        bid += gridDim.x;
+        __syncthreads();
+    }
+
+    bid = blockIdx.x;
+    tid = threadIdx.x;
+    while(bid * SPLIT < endOfArtistIndex*features)
+    {
+        int row = bid / features + tid / SPLIT;
+        int col = bid % features;
+        res = Y[row * features + tid%SPLIT] * Y_T[col + endOfArtistIndex * tid%SPLIT];
+        __syncthreads();
+        atomicAdd(&Y_P[bid + tid/SPLIT], res);
+        bid += gridDim.x;
+        __syncthreads();
+    }
+
+    tid = threadIdx.x + blockIdx.x * blockDim.x;
+    while(tid < endOfUserIndex)
+    {
+        for(int k = 0; k < NUM_FEATURES; k++)
+        {
+            user_row[tid * NUM_FEATURES + k] = X[tid*NUM_FEATURES + k];
+            if(user_row[tid * NUM_FEATURES + k] != 0)
+            {
+                user_pref[tid*NUM_FEATURES + k] = 1;
+            }
+            else
+            {
+                user_pref[tid*NUM_FEATURES + k] = user_row[tid*NUM_FEATURES + k];
+            }
+            user_confidence_I[tid*NUM_FEATURES * k * NUM_FEATURES + k] = user_row[tid * NUM_FEATURES + k];
+            user_confidence[tid*NUM_FEATURES * k * NUM_FEATURES + k] = user_row[tid * NUM_FEATURES + k] + 1;
+        }
+        tid+= blockDim.x * gridDim.x;
+    }
+
+    tid = threadIdx.x;
+
+    for(int i = 0; i < iterations; i++)
+    {
+        for(int j = 0; j < endOfUserIndex; j++)
+        {
+            int res;
+            int bid = blockIdx.x;
+            int tid = threadIdx.x;
+            while(bid * SPLIT < endOfArtistIndex*features)
+            {
+                int row = bid / features + tid / SPLIT;
+                int col = bid % features;
+                res = Y_T[row * features + tid%SPLIT] * user_confidence_I[col + features * tid%SPLIT];
+                __syncthreads();
+                atomicAdd(&Y_temp[bid + tid/SPLIT], res);
+                bid += gridDim.x;
+                __syncthreads();
+            }
+
+            bid = blockIdx.x;
+            tid = threadIdx.x;
+            while(bid * SPLIT < endOfArtistIndex*features)
+            {
+                int row = bid / features + tid / SPLIT;
+                int col = bid % features;
+                res = Y_temp[row * features + tid%SPLIT] * Y[col + endOfArtistIndex * tid%SPLIT];
+                __syncthreads();
+                atomicAdd(&Y_result_y[bid + tid/SPLIT], res);
+                bid += gridDim.x;
+                __syncthreads();
+            }
+
+            tid = threadIdx.x;
+            while(tid < endOfArtistIndex*endOfArtistIndex)
+            {
+                int row = tid / endOfArtistIndex;
+                int col = tid % endOfArtistIndex;
+                Y_result_pu [row * endOfArtistIndex + col] += Y_P[row * endOfArtistIndex + col] + I1[row * endOfArtistIndex + col];
+                tid += blockDim.x * gridDim.x;
+
+            }
+
+            bid = blockIdx.x;
+            tid = threadIdx.x;
+            while(bid * SPLIT < endOfArtistIndex*features)
+            {
+                int row = bid / features + tid / SPLIT;
+                int col = bid % features;
+                res = Y_T[row * features + tid%SPLIT] * user_confidence[col + features * tid%SPLIT];
+                __syncthreads();
+                atomicAdd(&Y_temp_2[bid + tid/SPLIT], res);
+                bid += gridDim.x;
+                __syncthreads();
+            }
+
+            bid = blockIdx.x;
+            tid = threadIdx.x;
+            while(bid * SPLIT < endOfArtistIndex*features)
+            {
+                int row = bid / features + tid / SPLIT;
+                int col = bid % features;
+                res = Y_temp_2[row * features + tid%SPLIT] * Y[col + endOfArtistIndex * tid%SPLIT];
+                __syncthreads();
+                atomicAdd(&Y_result_pu[bid + tid/SPLIT], res);
+                bid += gridDim.x;
+                __syncthreads();
+            }
+        }
+    }
+
+        
+
+    tid = threadIdx.x + blockIdx.x * blockDim.x;
+    while(tid < endOfArtistIndex)
+    {
+        for(int k = 0; k < NUM_FEATURES; k++)
+        {
+            artist_row[tid * NUM_FEATURES + k] = Y[tid*NUM_FEATURES + k];
+            if(artist_row[tid * NUM_FEATURES + k] != 0)
+            {
+                artist_pref[tid*NUM_FEATURES + k] = 1;
+            }
+            else
+            {
+                artist_pref[tid*NUM_FEATURES + k] = artist_row[tid*NUM_FEATURES + k];
+            }
+            artist_confidence_I[tid*NUM_FEATURES * k * NUM_FEATURES + k] = artist_row[tid * NUM_FEATURES + k];
+            artist_confidence[tid*NUM_FEATURES * k * NUM_FEATURES + k] = artist_row[tid * NUM_FEATURES + k] + 1;
+        }
+        tid+= blockDim.x * gridDim.x;
+    }
+    for(int i = 0; i < iterations; i++)
+    {
+        for(int j = 0; j < endOfUserIndex; j++)
+        {
+
+            int res;
+            int bid = blockIdx.x;
+            int tid = threadIdx.x;
+            while(bid * SPLIT < endOfUserIndex*features)
+            {
+                int row = bid / features + tid / SPLIT;
+                int col = bid % features;
+                res = X_T[row * features + tid%SPLIT] * artist_confidence_I[col + features * tid%SPLIT];
+                __syncthreads();
+                atomicAdd(&X_temp[bid + tid/SPLIT], res);
+                bid += gridDim.x;
+                __syncthreads();
+            }
+
+            
+            bid = blockIdx.x;
+            tid = threadIdx.x;
+            while(bid * SPLIT < endOfUserIndex*features)
+            {
+                int row = bid / features + tid / SPLIT;
+                int col = bid % features;
+                res = X_temp[row * features + tid%SPLIT] * X[col + endOfUserIndex * tid%SPLIT];
+                __syncthreads();
+                atomicAdd(&X_result_x[bid + tid/SPLIT], res);
+                bid += gridDim.x;
+                __syncthreads();
+            }
+
+            tid = threadIdx.x;
+            while(tid < endOfUserIndex*endOfUserIndex)
+            {
+                int row = tid / endOfUserIndex;
+                int col = tid % endOfUserIndex;
+                Y_result_y [row * endOfUserIndex + col] += Y_P[row * endOfUserIndex + col] + I1[row * endOfUserIndex + col];
+                tid += blockDim.x * gridDim.x;
+
+            }
+
+
+            bid = blockIdx.x;
+            tid = threadIdx.x;
+            while(bid * SPLIT < endOfUserIndex*features)
+            {
+                int row = bid / features + tid / SPLIT;
+                int col = bid % features;
+                res = X_T[row * features + tid%SPLIT] * artist_confidence[col + features * tid%SPLIT];
+                __syncthreads();
+                atomicAdd(&X_temp_2[bid + tid/SPLIT], res);
+                bid += gridDim.x;
+                __syncthreads();
+            }
+
+            bid = blockIdx.x;
+            tid = threadIdx.x;
+            while(bid * SPLIT < endOfUserIndex*features)
+            {
+                int row = bid / features + tid / SPLIT;
+                int col = bid % features;
+                res = X_temp_2[row * features + tid%SPLIT] * X[col + endOfUserIndex * tid%SPLIT];
+                __syncthreads();
+                atomicAdd(&X_result_pi[bid + tid/SPLIT], res);
+                bid += gridDim.x;
+                __syncthreads();
+            }
+
+            
+        }
+        tid = threadIdx.x;
+        while(tid < endOfUserIndex*features)
+        {
+            int row = tid / features;
+            int col = tid % features;
+            X [row * features + col] = Y_result_y[row * features + col] / Y_result_pu[row * features + col];
+            tid += blockDim.x * gridDim.x;
+
+        }
+
+        tid = threadIdx.x;
+        while(tid < endOfArtistIndex*features)
+        {
+            int row = tid / features;
+            int col = tid % features;
+            Y [row * features + col] = X_result_x[row * features + col] / X_result_pi[row * features + col];
+            tid += blockDim.x * gridDim.x;
+
+        }
+    }
+
+
+    
+}
+
 
 void recommend(int user_id, int num_items, int * answer)
 {
@@ -300,7 +601,7 @@ void recommend(int user_id, int num_items, int * answer)
 
     
 
-    mat_vec_multiply(Y_T, X_rec, rec_vector, NUM_FEATURES, endOfArtistIndex); 
+    //mat_vec_multiply(Y_T, X_rec, rec_vector, NUM_FEATURES, endOfArtistIndex); 
 
 
     /*int *mat_d, *vec_d, *res_vec_d;
@@ -341,6 +642,77 @@ void recommend(int user_id, int num_items, int * answer)
         }
         answer[i] = index;
     }
+}
+
+int implicit_als_2(int alpha_val, int iterations, double lambda_val, int features)
+{
+    size_t available, total;
+    X = (int *)malloc(sizeof(int) * endOfUserIndex * NUM_FEATURES);
+    Y = (int *)malloc(sizeof(int) * endOfArtistIndex * NUM_FEATURES);
+
+    for(int i = 0; i < endOfUserIndex; i++)
+    {
+        for(int j = 0; j < features; j++)
+        {
+            X[i * features + j] = rand() % RAND_RANGE;
+        }
+    }
+    for(int i = 0; i < endOfArtistIndex; i++)
+    {
+        for(int j = 0; j < features; j++)
+        {
+            Y[i * features + j] = rand() % RAND_RANGE;
+        }
+    }
+    int *X_P, *Y_P, *data, *X_d, *Y_d; 
+    int *X_temp, *Y_temp, *Y_result_y, *Y_result_pu, *Y_temp_2, *X_result_x, *X_result_pi, *X_temp_2;
+    int *X_I, *Y_I, *I, *I1, *user_row, *artist_row, *user_pref, *artist_pref, *user_confidence, *artist_confidence, *user_confidence_I, *artist_confidence_I; 
+    
+    data = (int *)malloc(sizeof(int) * SPARSE_SIZE * SPARSE_SIZE);
+    cudaMemGetInfo(&available, &total);
+    printf("%u %u\n", available, total);
+    H_ERR(cudaMalloc((void **)&data, sizeof(int) * SPARSE_SIZE * SPARSE_SIZE));
+    H_ERR(cudaMalloc((void **)&X_d, sizeof(int) * endOfUserIndex * NUM_FEATURES));
+    H_ERR(cudaMalloc((void **)&Y_d, sizeof(int) * endOfArtistIndex * NUM_FEATURES));
+    H_ERR(cudaMalloc((void **)&X_T, sizeof(int) * endOfUserIndex * NUM_FEATURES));
+    H_ERR(cudaMalloc((void **)&Y_T, sizeof(int) * endOfArtistIndex * NUM_FEATURES));
+    H_ERR(cudaMalloc((void **)&X_P, sizeof(int) * endOfUserIndex * endOfUserIndex));
+    H_ERR(cudaMalloc((void **)&Y_P, sizeof(int) * endOfArtistIndex * endOfArtistIndex));
+    H_ERR(cudaMalloc((void **)&X_I, sizeof(int) * endOfUserIndex * endOfUserIndex));
+    H_ERR(cudaMalloc((void **)&Y_I, sizeof(int) * endOfArtistIndex * endOfArtistIndex));
+
+    H_ERR(cudaMalloc((void **)&I, sizeof(int) * features * features));
+    H_ERR(cudaMalloc((void **)&I1, sizeof(int) * endOfArtistIndex * endOfArtistIndex));
+    H_ERR(cudaMalloc((void **)&user_row, sizeof(int) * endOfArtistIndex * features));
+    H_ERR(cudaMalloc((void **)&artist_row, sizeof(int) * endOfUserIndex * features));
+    H_ERR(cudaMalloc((void **)&user_pref, sizeof(int) * endOfArtistIndex * features));
+    H_ERR(cudaMalloc((void **)&artist_pref, sizeof(int) * endOfUserIndex * features));
+    H_ERR(cudaMalloc((void **)&user_confidence, sizeof(int) * endOfUserIndex * features));
+    H_ERR(cudaMalloc((void **)&artist_confidence, sizeof(int) * endOfArtistIndex * features));
+
+    H_ERR(cudaMalloc((void **)&user_confidence_I, sizeof(int) * endOfUserIndex * features));
+    H_ERR(cudaMalloc((void **)&artist_confidence_I, sizeof(int) * endOfArtistIndex * features));
+    H_ERR(cudaMalloc((void **)&X_temp, sizeof(int) * endOfUserIndex * features));
+    H_ERR(cudaMalloc((void **)&X_temp_2, sizeof(int) * endOfUserIndex * features));
+    H_ERR(cudaMalloc((void **)&X_result_x, sizeof(int) * endOfUserIndex * endOfUserIndex));
+    H_ERR(cudaMalloc((void **)&X_result_pi, sizeof(int) * endOfUserIndex * endOfUserIndex));
+    H_ERR(cudaMalloc((void **)&Y_temp, sizeof(int) * endOfArtistIndex * features));
+    H_ERR(cudaMalloc((void **)&Y_temp_2, sizeof(int) * endOfArtistIndex * features));
+
+    H_ERR(cudaMalloc((void **)&Y_result_y, sizeof(int) * endOfArtistIndex * endOfArtistIndex));
+    H_ERR(cudaMalloc((void **)&Y_result_pu, sizeof(int) * endOfArtistIndex * endOfArtistIndex));
+    
+    H_ERR(cudaMemcpy(data, dataMatrix, sizeof(int) * SPARSE_SIZE * SPARSE_SIZE, cudaMemcpyHostToDevice));
+    H_ERR(cudaMemcpy(X_d, X, sizeof(int) * endOfUserIndex * features, cudaMemcpyHostToDevice));
+    H_ERR(cudaMemcpy(Y_d, Y, sizeof(int) * endOfArtistIndex * features, cudaMemcpyHostToDevice));
+
+    cudaMemGetInfo(&available, &total);
+    printf("%u %u\n", available, total);
+    implicit_als_gpu<<<256, 256>>>(data, X_d, Y_d, X_T, Y_T, X_P, Y_P, X_I, Y_I, I, I1, user_row, artist_row, user_pref, artist_pref, user_confidence, artist_confidence, user_confidence_I, artist_confidence_I, X_temp, Y_temp, Y_result_y, Y_result_pu, Y_temp_2, X_result_x, X_result_pi, X_temp_2, alpha_val, iterations, lambda_val, features, endOfArtistIndex, endOfUserIndex);
+    
+    H_ERR(cudaMemcpy(X, X_d, sizeof(int) * endOfUserIndex * NUM_FEATURES, cudaMemcpyDeviceToHost));       
+    H_ERR(cudaMemcpy(Y, Y_d, sizeof(int) * endOfArtistIndex * NUM_FEATURES, cudaMemcpyDeviceToHost));       
+    return; 
 }
 
 int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
@@ -996,8 +1368,10 @@ int implicit_als(int alpha_val, int iterations, double lambda_val, int features)
     elapsed_time -= time_beg;
     //printf("part 11 elapsed time is: %f\n", elapsed_time);
 
-
+    return;
 }
+
+
 
 int main (int args, char **argv)
 {
@@ -1089,7 +1463,7 @@ int main (int args, char **argv)
     int *ans;
     ans = (int *)malloc(sizeof(int) * NUM_RECOMMENDATIONS);
     double time_beg = wtime();
-	implicit_als(40, ITERATIONS, 0.1, 10);
+	implicit_als_2(40, ITERATIONS, 0.1, 10);
     double elapsed_time = wtime();
     elapsed_time -= time_beg;
     printf("implicit elapsed time is: %f\n", elapsed_time);
